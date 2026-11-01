@@ -2,8 +2,10 @@
 import { $, esc } from './dom.js';
 import { BOARDS, VENDORS, seriesLabel, FORMS, boardParts, fmtKB } from '../core/boards.js';
 import { SDK_NAMES } from '../core/sdk.js';
-import { MODULE_TYPES, TYPE_ORDER, variantOf, MAX_MODULES } from '../core/parts.js';
-import { bench, SIM, moduleLabel, moduleById, moduleState, sensorTemp, supply } from '../core/sim.js';
+import { MODULE_TYPES, MODULE_GROUPS, variantOf, MAX_MODULES } from '../core/parts.js';
+import { bench, SIM, moduleLabel, moduleById, moduleState, sensorTemp, supply, isAnalyzer } from '../core/sim.js';
+import { tcTemp, canLink, nodeOfCan, spiDevices, CAN } from '../core/buses.js';
+import { probeSource, probeOk } from '../core/analyzer.js';
 
 const GRADE = ['', '入門', '進階', '高階'];
 const RH_DEV = ['sht3x', 'aht20', 'hdc1080'];
@@ -20,7 +22,8 @@ const specTable = rows => `<dl class="specs">${rows.map(([k, v]) => `<dt>${esc(k
 function boardSpecs(b){
   return [['廠牌', VENDORS.find(v => v.id === b.vendor).name], ['MCU', b.mcu], ['核心', `${b.core} · ${b.mhz} MHz`], ['SDK', SDK_NAMES[b.sdk]], ['Flash／RAM', `${fmtKB(b.flash)}／${fmtKB(b.ram)}`], ['封裝', b.pkg], ['板型', FORMS[b.form].name],
     ['燒錄器', b.prog], ['板載 LED', b.leds.map(l => `${l.name} ${l.pin}`).join('、')], ['使用者按鈕', b.btn ? `${b.btn.name} ${b.btn.pin}${b.btn.activeLow ? '（低電位有效）' : ''}` : '無'],
-    ['I2C', `${b.i2c.bus}：SCL ${b.i2c.scl}、SDA ${b.i2c.sda}`], ['printf 輸出', `${b.vcp.periph}（${b.vcp.tx}/${b.vcp.rx}）`], ['Device ID', b.devId]];
+    ['I2C', `${b.i2c.bus}：SCL ${b.i2c.scl}、SDA ${b.i2c.sda}`], ['SPI', b.spi ? `${b.spi.bus}：SCK ${b.spi.sck}、MISO ${b.spi.miso}、MOSI ${b.spi.mosi}` : '無（' + (b.noSpi || '') + '）'],
+    ['CAN', b.can ? `${b.can.bus}：TX ${b.can.tx}、RX ${b.can.rx}` : b.noCan || '無'], ['printf 輸出', `${b.vcp.periph}（${b.vcp.tx}/${b.vcp.rx}）`], ['Device ID', b.devId]];
 }
 
 function overview(){
@@ -44,8 +47,8 @@ function overview(){
     <span class="eyebrow">外接模組 ${mods.length}／${MAX_MODULES}</span>
     <ul class="plist">${mods.map(m => { const v = variantOf(m.type, m.variant); return `<li><button data-act="module" data-id="${m.id}" type="button"><span><strong>${esc(moduleLabel(m))}</strong><small>${esc(v.name)} · ${esc(v.part)}</small></span>${gradeTag(v.grade)}<span class="go">›</span></button></li>`; }).join('') || '<li class="empty">還沒有外接模組，從下面新增。</li>'}</ul>
     <span class="eyebrow">新增模組</span>
-    <div class="addgrid">${TYPE_ORDER.map(t => `<button class="btn sm" data-act="add" data-type="${t}" type="button" ${mods.length >= MAX_MODULES ? 'disabled' : ''}>＋ ${esc(MODULE_TYPES[t].name)}</button>`).join('')}</div>
-    ${mods.length >= MAX_MODULES ? '<p class="note">工作台最多放 8 個模組，先移除一個再新增。</p>' : ''}
+    ${MODULE_GROUPS.map(([g, types]) => `<div class="addgroup"><small>${esc(g)}</small><div class="addgrid">${types.map(t => `<button class="btn sm" data-act="add" data-type="${t}" type="button" ${mods.length >= MAX_MODULES ? 'disabled' : ''}>＋ ${esc(MODULE_TYPES[t].name)}</button>`).join('')}</div></div>`).join('')}
+    ${mods.length >= MAX_MODULES ? `<p class="note">工作台最多放 ${MAX_MODULES} 個模組，先移除一個再新增。</p>` : ''}
   </section>`;
 }
 
@@ -89,6 +92,14 @@ function controls(m, v){
     <button class="btn sm" data-act="warm" type="button">用手指按住感測器（加溫）</button>`;
   if (m.type === 'pir') return `<button class="btn sm" data-act="motion" type="button">模擬有人經過</button>`;
   if (m.type === 'button') return `<button class="btn sm" id="holdBtn" type="button">按住這裡＝按下按鈕</button>`;
+  if (isAnalyzer(m)) return `<button class="btn primary la-open" data-act="analyzer" type="button">打開邏輯分析儀（波形、解說、教學）</button>`;
+  if (m.type === 'tc'){
+    const t = Math.round(s.tcT ?? SIM.ambient.T);
+    return `<label class="ctl" for="tcT">熱電偶溫度<input type="range" id="tcT" min="${v.dev === 'max31855' ? -50 : 0}" max="400" value="${t}"><output id="tcTOut">${t} °C</output></label>
+      <label class="ctl" for="tcOpen" style="grid-template-columns:auto 1fr">熱電偶斷線<input type="checkbox" id="tcOpen" ${s.open ? 'checked' : ''} style="width:auto;justify-self:start"></label>`;
+  }
+  if (m.type === 'flash') return `<button class="btn sm" data-act="erase" type="button">整顆抹除（全部變成 0xFF）</button>`;
+  if (m.type === 'can'){ const on = nodeOfCan(m).on; return `<button class="btn sm ${on ? '' : 'primary'}" data-act="node" type="button">${on ? '關閉測試節點（看 ACK 錯誤）' : '開啟測試節點'}</button>`; }
   return '';
 }
 
@@ -133,6 +144,20 @@ export function updateLive(){
   if (m.type === 'button') t = s.pressed ? '目前：按下' : '目前：放開';
   if (m.type === 'pot'){ const vcc = supply(`${m.id}.VCC`); t = vcc ? `輸出電壓約 ${(vcc * m.st.pot).toFixed(2)} V` : '沒有供電'; }
   if (m.type === 'temp') t = s.damaged ? '已損壞，請在「檢測」分頁更換' : s.ok ? `感測器讀值約 ${sensorTemp(m).toFixed(2)} °C（${v.part} 的誤差已包含在內）` : '目前沒有連上 I2C 匯流排';
+  if (isAnalyzer(m)){
+    const T = MODULE_TYPES[m.type];
+    t = T.pins.filter(([n]) => n !== 'GND').map(([n]) => { const src = probeSource(m, n); return `${n} 探棒：${src.label}${src.kind === 'line' && !probeOk(m, n) ? '（不是預期的線）' : ''}`; }).join('\n') + `\n取樣率最高 ${v.rate / 1e6} MS/s`;
+  }
+  if (m.type === 'tc') t = spiDevices().some(d => d.m === m) ? (m.st.open ? '熱電偶斷線：讀到的資料會帶故障旗標' : `熱電偶溫度約 ${tcTemp(m).toFixed(2)} °C`) : '目前沒有連上 SPI 匯流排（檢查電源與 SCK／SO 接線）';
+  if (m.type === 'flash'){
+    const mem = m.st.mem, bytes = Array.from({ length:16 }, (_, i) => (mem && mem.has(i)) ? mem.get(i) : 0xFF);
+    t = `${spiDevices().some(d => d.m === m) ? '已連上 SPI 匯流排' : '目前沒有連上 SPI 匯流排'}\n位址 0x000000：${bytes.map(x => x.toString(16).toUpperCase().padStart(2, '0')).join(' ')}\n（Flash 斷電後資料仍然保留）`;
+  }
+  if (m.type === 'can'){
+    const L = canLink(), n = nodeOfCan(m), last = n.rx[n.rx.length - 1];
+    t = !L.powered ? '收發器沒有供電（檢查 VCC 電壓與 GND）' : !L.ok ? `${!bench.board.can ? '這顆晶片沒有 CAN 控制器' : !L.txOk ? 'TXD 沒有接到 MCU 的 CAN_TX' : 'RXD 沒有接到 MCU 的 CAN_RX'}` : `測試節點：${n.on ? '開啟' : '關閉'}，已送出 ${n.cnt} 筆 ID 0x200`;
+    t += `\n收到 MCU 的訊框：${n.rx.length} 筆${last ? `，最後一筆 ID 0x${last.id.toString(16).toUpperCase()}：${last.data.map(x => x.toString(16).toUpperCase().padStart(2, '0')).join(' ')}` : ''}${CAN.txErr ? `\nMCU 有 ${CAN.txErr} 筆訊框沒有收到 ACK` : ''}`;
+  }
   el.textContent = t;
 }
 
@@ -153,6 +178,9 @@ export function initInspector(actions){
       case 'remove': act.removeModule(insp.id); break;
       case 'add': act.addModule(b.dataset.type); break;
       case 'warm': act.warm(insp.id); break;
+      case 'analyzer': act.openAnalyzer(insp.id); break;
+      case 'erase': act.eraseFlash(insp.id); break;
+      case 'node': act.setNode(insp.id, !nodeOfCan(moduleById(insp.id)).on); break;
       case 'motion': act.motion(insp.id); break;
     }
   });
@@ -161,6 +189,8 @@ export function initInspector(actions){
     if (e.target.id === 'potRange'){ const v = +e.target.value / 100; $('#potOut').textContent = e.target.value + '%'; act.setPot(insp.id, v); }
     if (e.target.id === 'ambT'){ SIM.ambient.T = +e.target.value; $('#ambTOut').textContent = SIM.ambient.T.toFixed(1) + ' °C'; act.changed(); }
     if (e.target.id === 'ambRH'){ SIM.ambient.RH = +e.target.value; $('#ambRHOut').textContent = SIM.ambient.RH + ' %'; act.changed(); }
+    if (e.target.id === 'tcT'){ $('#tcTOut').textContent = e.target.value + ' °C'; act.setTc(insp.id, 'tcT', +e.target.value); }
+    if (e.target.id === 'tcOpen') act.setTc(insp.id, 'open', e.target.checked);
   });
   const hold = (down, e) => { if (e.target.id !== 'holdBtn') return; e.preventDefault(); if (down) try { e.target.setPointerCapture(e.pointerId); } catch (_){} act.press(insp.id, down); };
   el.addEventListener('pointerdown', e => hold(true, e));

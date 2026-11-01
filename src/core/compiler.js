@@ -74,10 +74,10 @@ export function compile(src){
     else if (VENDOR_PREFIX.test(n)) D(p.line, p.col, `'${n}' 是 SDK 的設定函式，模擬器沒有實作，執行時會略過`, 'warning');
     else D(p.line, p.col, `implicit declaration of function '${n}'；模擬器不支援這個函式`);
   }
-  const idRe = /\b(GPIO_PIN_(\d+)|GPIO([A-Z])\b|(?:hi2c|huart|hlpuart|hspi|htim|hadc)\d+)/g, known = new Set(API_NAMES);
+  const idRe = /\b(GPIO_PIN_(\d+)|GPIO([A-Z])\b|(?:hi2c|huart|hlpuart|hspi|htim|hadc|hcan|hfdcan)\d+)/g, known = new Set(API_NAMES);
   while ((m = idRe.exec(bare))){
     const bad = (m[2] && +m[2] > 15) || (m[3] && m[3] > 'K') || (/^h/.test(m[1]) && !known.has(m[1]));
-    if (bad){ const p = posOf(bare, m.index); D(p.line, p.col, `'${m[1]}' undeclared (first use in this function)` + (/^h/.test(m[1]) ? '；模擬器支援 hi2c1–3、huart1–3、hlpuart1、hadc1' : '')); }
+    if (bad){ const p = posOf(bare, m.index); D(p.line, p.col, `'${m[1]}' undeclared (first use in this function)` + (/^h/.test(m[1]) ? '；模擬器支援 hi2c1–3、hspi1–3、huart1–3、hlpuart1、hadc1、hcan1–2、hfdcan1–2' : '')); }
   }
   if (!userFns.has('main')) diag.push({ sev:'error', link:true, msg:"undefined reference to `main'" });
   if (/while\s*\(\s*1\s*\)/.test(bare) && !/HAL_Delay|HAL_GetTick|delay_cycles|SysCtlDelay|DEVICE_DELAY_US|SDK_DelayAtLeastUs/.test(bare)) diag.push({ sev:'warning', line:null, msg:'主迴圈沒有 HAL_Delay，序列埠輸出會非常密集' });
@@ -108,8 +108,9 @@ export function transpile(s, userFns){
     (x, name, size, init) => `let ${name} = __arr(${size || 0}, ${init ? (init[0] === '{' ? '[' + init.slice(1, -1) + ']' : init) : 'null'});`);
   s = s.replace(new RegExp(String.raw`\b(?:static\s+|volatile\s+|const\s+|register\s+)*(?:unsigned\s+|signed\s+)?(?:${TYPES})(?:\s*\*\s*|\s+)(?=[A-Za-z_])`, 'g'), 'let ');
   // 結構與 SDK 型別（xxx_t、I2C_Transaction 這類）：沒有初值時建立空物件；大括號初值改成陣列
-  s = s.replace(/\b(?:static\s+|volatile\s+|const\s+)*(?:[a-z_][a-z0-9_]*_t|(?=[A-Z][A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s+([A-Za-z_]\w*)\s*;/g, 'let $1 = {};');
-  s = s.replace(/\b(?:static\s+|volatile\s+|const\s+)*(?:[a-z_][a-z0-9_]*_t|(?=[A-Z][A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s+(?=[A-Za-z_]\w*\s*=)/g, 'let ');
+  // TivaWare 的型別以小寫 t 開頭（tCANMsgObject）
+  s = s.replace(/\b(?:static\s+|volatile\s+|const\s+)*(?:[a-z_][a-z0-9_]*_t|t[A-Z][A-Za-z0-9]+|(?=[A-Z][A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s+([A-Za-z_]\w*)\s*;/g, 'let $1 = __obj();');
+  s = s.replace(/\b(?:static\s+|volatile\s+|const\s+)*(?:[a-z_][a-z0-9_]*_t|t[A-Z][A-Za-z0-9]+|(?=[A-Z][A-Za-z0-9_]*[a-z])[A-Z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\s+(?=[A-Za-z_]\w*\s*=)/g, 'let ');
   s = s.replace(/=\s*\{([^{}]*)\}\s*;/g, '= [$1];');
   s = s.replace(/\blet\s+([A-Za-z_]\w*)\s*;/g, 'let $1 = 0;');
   // 整數型別轉換保留截斷效果：(int16_t)(x) → __i16(x)、(uint8_t)a[i] → __u8(a[i])；其他轉換（float、指標）直接移除

@@ -3,6 +3,7 @@ import { BOARD_BY_ID, DEFAULT_BOARD, pinTitle } from './boards.js';
 import { MODULE_TYPES, variantOf, RAIL_HOLES, MAX_MODULES } from './parts.js';
 import { makeDevice } from './devices.js';
 import { hooks } from './hooks.js';
+import { setTrace, traceGpio } from './trace.js';
 
 export const SIM = { usb:true, flashed:null, out:{}, mode:{}, run:'idle', b1:false, ambient:{ T:24.6, RH:55 } };
 export const bench = { board:BOARD_BY_ID[DEFAULT_BOARD], modules:[] };
@@ -12,7 +13,20 @@ let wireSeq = 0, modSeq = 0;
 
 /** 網路節點中，除了電源、地、電源軌與模組腳位以外的都是 MCU 腳位（PA5、P1.0、PTB22、GPIO31、PIO1_4…） */
 export const isGpioName = s => !['3V3', '5V', 'GND', 'RAIL+', 'RAIL-'].includes(s) && !/^M\d+\./.test(s);
-const freshState = () => ({ pressed:false, pot:.42, motionUntil:0, boost:0, damaged:false, dev:null });
+const freshState = () => ({ pressed:false, pot:.42, motionUntil:0, boost:0, damaged:false, dev:null, tcT:null, open:false });
+export const isAnalyzer = m => /^la_/.test(m.type);
+/** 工作台上有邏輯分析儀時才記錄訊號 */
+const syncTrace = () => setTrace(bench.modules.some(isAnalyzer));
+
+/* ---------- GPIO 輸出（所有 SDK 都經過這裡，邏輯分析儀與 SPI 片選才看得到） ---------- */
+export const pinListeners = [];
+export function pinWrite(p, v){
+  SIM.mode[p] = 'out'; const nv = v ? 1 : 0;
+  if (SIM.out[p] === nv) return;
+  SIM.out[p] = nv; traceGpio(p, nv);
+  for (const f of pinListeners) f(p, nv);
+}
+export const pinToggle = p => pinWrite(p, !SIM.out[p]);
 
 /* ---------- 腳位登錄 ---------- */
 function gpioFunc(h){
@@ -21,7 +35,10 @@ function gpioFunc(h){
   if (h.tags.includes('sda')) f.push(`${bench.board.i2c.bus}_SDA`);
   if (h.tags.includes('adc')) f.push('ADC 類比輸入');
   if (h.tags.includes('pwm')) f.push('PWM');
-  if (h.tags.includes('vcp')) f.push(`${bench.board.vcp.periph} 虛擬序列埠`);
+  if (h.tags.includes('vcp')) f.push(`${bench.board.vcp.periph} 虛擬序列埠${h.mcu === bench.board.vcp.tx ? ' TX' : ' RX'}`);
+  for (const [t, n] of [['sck', 'SCK'], ['miso', 'MISO'], ['mosi', 'MOSI']]) if (h.tags.includes(t)) f.push(`${bench.board.spi.bus}_${n}`);
+  if (h.tags.includes('cantx')) f.push(`${bench.board.can.bus}_TX`);
+  if (h.tags.includes('canrx')) f.push(`${bench.board.can.bus}_RX`);
   if (h.tags.includes('led')) f.push('接板載 LED');
   return f.length ? f.join(' · ') : 'GPIO';
 }
@@ -65,13 +82,13 @@ export function addModule(type, variant, quiet, fixed){
   let id = 'M' + (++modSeq);
   if (fixed && /^M\d+$/.test(fixed.id) && !moduleById(fixed.id)){ id = fixed.id; modSeq = Math.max(modSeq, +id.slice(1)); }
   const m = { id, type, variant:variantOf(type, variant).id, slot, st:freshState() };
-  bench.modules.push(m); rebuildPins();
+  bench.modules.push(m); rebuildPins(); syncTrace();
   if (!quiet) hooks.benchChanged();
   return m;
 }
 export function removeModule(id, quiet){
   const i = bench.modules.findIndex(m => m.id === id); if (i < 0) return;
-  bench.modules.splice(i, 1); rebuildPins(); pruneWires();
+  bench.modules.splice(i, 1); rebuildPins(); pruneWires(); syncTrace();
   if (!quiet) hooks.benchChanged();
 }
 export function setVariant(id, vid){
@@ -79,7 +96,7 @@ export function setVariant(id, vid){
   m.variant = variantOf(m.type, vid).id; m.st = freshState();
   hooks.benchChanged();
 }
-export function resetBench(){ wires.forEach(w => hooks.wireRemoved(w)); wires = []; bench.modules = []; modSeq = 0; rebuildPins(); NET = netMap(); }
+export function resetBench(){ wires.forEach(w => hooks.wireRemoved(w)); wires = []; bench.modules = []; modSeq = 0; rebuildPins(); NET = netMap(); syncTrace(); }
 
 /* ---------- 杜邦線 ---------- */
 export function autoColor(a, b){

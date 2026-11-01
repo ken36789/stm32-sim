@@ -1,8 +1,8 @@
 {
   "name": "stm32-sim",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "瀏覽器裡的 MCU 模擬實驗室：ST、TI、NXP 共 116 種晶片的 3D 接線、檢測與燒錄",
+  "description": "瀏覽器裡的 MCU 模擬實驗室：116 種晶片的 3D 接線、檢測、燒錄，與 I2C／UART／SPI／CAN 邏輯分析儀",
   "type": "module",
   "scripts": {
     "dev": "vite --host",

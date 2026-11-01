@@ -1,6 +1,8 @@
 // 接線檢測規則：每條結果為 { sev:'err'|'warn'|'ok'|'info', title, detail, pins, action? }
 import { MODULE_TYPES, variantOf } from './parts.js';
-import { bench, wires, NET, SIM, net, netInfo, shorts, nodeOf, isGpioName, moduleLabel, headerPin, PINS } from './sim.js';
+import { bench, wires, NET, SIM, net, netInfo, shorts, nodeOf, isGpioName, moduleLabel, headerPin, PINS, isAnalyzer, moduleById } from './sim.js';
+import { SPI_PINS } from './buses.js';
+import { probeSource, expectedSource, probeOk } from './analyzer.js';
 import { stripCode } from './compiler.js';
 import { hooks } from './hooks.js';
 
@@ -43,7 +45,9 @@ export function analyzeCode(src){
   });
   return { outs, ins,
     i2c:/HAL_I2C_|DL_I2C_|_I2C_master|I2CMaster|I2C_sendStartCondition|I2C_MasterStart|LPI2C_Master/.test(code),
-    adc:/HAL_ADC_GetValue|DL_ADC12_getMemResult|ADC\w*_getResults|ADCSequenceDataGet|ADC_readResult|ADC16_GetChannelConversionValue|LPADC_GetConvResult|ADC_GetChannelConversion/.test(code) };
+    adc:/HAL_ADC_GetValue|DL_ADC12_getMemResult|ADC\w*_getResults|ADCSequenceDataGet|ADC_readResult|ADC16_GetChannelConversionValue|LPADC_GetConvResult|ADC_GetChannelConversion/.test(code),
+    spi:/HAL_SPI_|DL_SPI_\w*transmit|_SPI_transmitData|SSIDataPut|SPI_writeData|SPI_MasterTransferBlocking|DSPI_MasterTransfer|LPSPI_MasterTransfer/.test(code),
+    can:/HAL_CAN_AddTxMessage|HAL_FDCAN_AddMessage|DL_MCAN_TXBufAddReq|CANMessageSet|CAN_sendMessage|FLEXCAN_TransferSend|FLEXCAN_WriteTxMb/.test(code) };
 }
 
 const railV = node => { const i = netInfo(node); return i.v5 ? 5 : i.v33 ? 3.3 : 0; };
@@ -114,6 +118,51 @@ export function runChecks(src){
       case 'pir': vcc(v.vmin, 20, v.vmin > 3.6 ? 'HC-SR501 需要 4.5 V 以上，接 3V3 不會正常偵測。改接 5V，輸出仍是 3.3 V 不會傷到 MCU。' : null); gpio('OUT', 'in'); gnd(); break;
       case 'relay': vcc(v.vmin, 5.5, v.vmin > 3.6 ? '5 V 繼電器的線圈接 3.3 V 吸不動。改接 5V，或換成 3 V 繼電器模組。' : null); gpio('IN', 'out'); gnd(); break;
       case 'pot': vcc(1.8, 3.6, '電位器接 5 V 時輸出最高 5 V，超過 ADC 的 3.3 V 上限，會損壞輸入腳。改接 3V3。'); gpio('OUT', 'adc'); gnd(); break;
+      case 'tc': case 'flash': {
+        if (!b.spi){ add('err', `${b.name} 沒有可用的 SPI`, b.noSpi || '這塊板子沒有可以用的 SPI。換一塊開發板再試。', pinsOr(P('CS'))); break; }
+        vcc(v.vmin, v.vmax, `${v.part} 的工作電壓是 ${v.vmin}–${v.vmax} V。`); gnd();
+        const N = SPI_PINS[m.type], want = { sck:headerPin(b.spi.sck), miso:headerPin(b.spi.miso), mosi:headerPin(b.spi.mosi) };
+        const roles = [['sck', N.sck, 'SCK'], ['miso', N.miso, 'MISO'], ...(N.mosi ? [['mosi', N.mosi, 'MOSI']] : [])];
+        const swapped = N.mosi && netInfo(P(N.mosi)).gpio.includes(want.miso.mcu) && netInfo(P(N.miso)).gpio.includes(want.mosi.mcu);
+        if (swapped) add('err', `${moduleLabel(m)} 的 ${N.mosi} 與 ${N.miso} 接反`, `${N.mosi}（資料輸入）要接 MCU 的 MOSI＝${pinName(want.mosi.mcu)}，${N.miso}（資料輸出）要接 MISO＝${pinName(want.miso.mcu)}。名稱是從元件的角度看的：元件的輸入接主機的輸出。`, [...netPins(P(N.mosi)), ...netPins(P(N.miso))]);
+        else for (const [r, n, role] of roles){
+          const i = netInfo(P(n));
+          if (i.gpio.includes(want[r].mcu)) add('ok', `${moduleLabel(m)} ${n} → ${pinName(want[r].mcu)}`, `${want[r].mcu} 是 ${b.spi.bus}_${role}。`, netPins(P(n)));
+          else if (i.gpio.length) add('err', `${moduleLabel(m)} 的 ${n} 接到 ${pinName(i.gpio[0])}`, `這支腳不是 ${b.spi.bus} 的 ${role}，要接 ${pinName(want[r].mcu)}。`, netPins(P(n)));
+          else add('err', `${moduleLabel(m)} 的 ${n} 沒有接到開發板`, `${n} 要接到 ${pinName(want[r].mcu)}（${b.spi.bus}_${role}）。`, pinsOr(P(n)));
+        }
+        const cs = gpio('CS', 'out');
+        if (cs && [b.spi.sck, b.spi.miso, b.spi.mosi].map(l => headerPin(l)?.mcu).includes(cs)) add('err', `${moduleLabel(m)} 的 CS 接到 SPI 訊號腳`, 'CS 要接一支獨立的 GPIO，不能和 SCK／MISO／MOSI 共用。');
+        if (!code.spi) add('warn', '程式沒有使用 SPI', `元件已接好，但程式沒有呼叫 SPI 傳輸函式。可以按「載入範例程式」取得 ${v.part} 的讀取範例。`);
+        break;
+      }
+      case 'can': {
+        if (!b.can){ add('err', `${b.mcu} 不能做 CAN 實驗`, b.noCan || '這顆晶片沒有 CAN 控制器。', pinsOr(P('TXD'))); break; }
+        vcc(v.vmin, v.vmax, v.vmin > 3.6 ? 'TJA1050 需要 5 V 供電，接 3V3 不會動作。改接 5V，或換成 3.3 V 的 SN65HVD230。' : `${v.part} 是 3.3 V 的收發器，接 5 V 會損壞。改接 3V3。`); gnd();
+        const tx = headerPin(b.can.tx), rx = headerPin(b.can.rx), ti = netInfo(P('TXD')), ri = netInfo(P('RXD'));
+        if (ti.gpio.includes(rx.mcu) && ri.gpio.includes(tx.mcu)) add('err', `${moduleLabel(m)} 的 TXD 與 RXD 接反`, `收發器的 TXD 要接 MCU 的 CAN_TX＝${pinName(tx.mcu)}（MCU 送出 → 收發器轉成差動訊號），RXD 接 CAN_RX＝${pinName(rx.mcu)}。`, [...netPins(P('TXD')), ...netPins(P('RXD'))]);
+        else for (const [n, want, i, role] of [['TXD', tx, ti, 'TX'], ['RXD', rx, ri, 'RX']]){
+          if (i.gpio.includes(want.mcu)) add('ok', `${moduleLabel(m)} ${n} → ${pinName(want.mcu)}`, `${want.mcu} 是 ${b.can.bus}_${role}。`, netPins(P(n)));
+          else if (i.gpio.length) add('err', `${moduleLabel(m)} 的 ${n} 接到 ${pinName(i.gpio[0])}`, `這支腳不是 ${b.can.bus} 的 ${role}，要接 ${pinName(want.mcu)}。`, netPins(P(n)));
+          else add('err', `${moduleLabel(m)} 的 ${n} 沒有接到開發板`, `${n} 要接到 ${pinName(want.mcu)}（${b.can.bus}_${role}）。`, pinsOr(P(n)));
+        }
+        for (const n of ['CANH', 'CANL']){ const i = netInfo(P(n)); if (i.gpio.length || i.v33 || i.v5 || i.gnd) add('err', `${moduleLabel(m)} 的 ${n} 接到開發板或電源`, 'CANH／CANL 是差動匯流排，只能接其他 CAN 節點或 CAN 分析儀，不能接 MCU 腳位或電源。', netPins(P(n))); }
+        if (!code.can) add('warn', '程式沒有使用 CAN', '收發器已接好，但程式沒有送出 CAN 訊框。按「載入範例程式」可以看到這顆晶片 SDK 的 CAN 寫法。');
+        add('info', `${moduleLabel(m)}：模組內建 120 Ω 終端電阻與測試節點`, '測試節點每 500 ms 送出 ID 0x200，也會對 MCU 送出的訊框回 ACK。把 CAN 分析儀接到 CANH／CANL 就能看到匯流排上的差動訊號。');
+        break;
+      }
+      case 'la_i2c': case 'la_uart': case 'la_spi': case 'la_can': {
+        const label = moduleLabel(m);
+        if (!netInfo(P('GND')).gnd) add('warn', `${label} 的 GND 沒有接`, '邏輯分析儀量的是「探棒和 GND 之間的電壓」，沒有共地時波形會亂跳、解碼會失敗。把 GND 接到排針的 GND 或電源軌 −。', pinsOr(P('GND')));
+        else add('ok', `${label} GND → GND`, '和開發板共地。', netPins(P('GND')));
+        for (const [n] of T.pins.filter(([n]) => n !== 'GND')){
+          const src = probeSource(m, n), exp = expectedSource(m, n);
+          if (src.kind === 'open'){ add('info', `${label} 的 ${n} 探棒沒有接`, exp ? `要量 ${n} 的話，接到 ${exp.what}。` : '這個通道不會有訊號。', [P(n)]); continue; }
+          if (probeOk(m, n)) add('ok', `${label} ${n} 探棒 → ${src.label}`, '探棒只量電壓，不會影響電路。', netPins(P(n)));
+          else add('warn', `${label} 的 ${n} 探棒接到 ${src.label}`, exp ? `${n} 探棒應該接到 ${exp.what}。打開分析儀可以看到接錯時波形會變成什麼樣子。` : '這條線上沒有這種訊號。', netPins(P(n)));
+        }
+        break;
+      }
       case 'temp': {
         vcc(1.7, v.vmax, `${v.part} 最高 ${v.vmax} V，接 5 V 會燒毀。改接 3V3。`); gnd();
         const sclH = headerPin(b.i2c.scl), sdaH = headerPin(b.i2c.sda), c = netInfo(P('SCL')), d = netInfo(P('SDA'));
@@ -138,8 +187,9 @@ export function runChecks(src){
   for (const [a, ms] of Object.entries(byAddr)) if (ms.length > 1)
     add('err', `I2C 位址衝突：0x${(+a).toString(16).toUpperCase()}`, `${ms.map(m => `${moduleLabel(m)}（${variantOf(m.type, m.variant).part}）`).join(' 和 ')} 使用相同位址，兩個都會回應，資料會錯亂。換掉其中一顆，或改用位址不同的型號。`, ms.map(m => `${m.id}.SDA`));
 
+  const probeOnly = mcu => net(mcu).filter(x => /^M\d+\./.test(x)).every(x => isAnalyzer(moduleById(x.split('.')[0]) || {}));
   for (const h of b.header.filter(x => x.tags.includes('vcp')))
-    if ([...wired].some(id => nodeOf(id) === h.mcu)) add('warn', `${pinName(h.mcu)} 是虛擬序列埠腳位`, `${h.mcu} 連到 ${b.vcp.periph}，printf 從這裡輸出。接外部裝置會干擾序列埠。`, netPins(h.mcu));
+    if ([...wired].some(id => nodeOf(id) === h.mcu) && !probeOnly(h.mcu)) add('warn', `${pinName(h.mcu)} 是虛擬序列埠腳位`, `${h.mcu} 連到 ${b.vcp.periph}，printf 從這裡輸出。接外部裝置會干擾序列埠。`, netPins(h.mcu));
   for (const h of b.header.filter(x => x.tags.includes('led'))){
     const led = b.leds.find(l => l.pin === h.mcu);
     if ([...wired].some(id => nodeOf(id) === h.mcu)) add('info', `${pinName(h.mcu)} 同時連到板載 ${led.name}`, `這支腳在板上也接著 ${led.name}，輸出時板載 LED 會一起亮。`, netPins(h.mcu));

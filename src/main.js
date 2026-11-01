@@ -2,10 +2,13 @@
 import './styles.css';
 import * as THREE from 'three';
 import { BOARD_BY_ID, DEFAULT_BOARD, boardParts } from './core/boards.js';
-import { MODULE_TYPES, variantOf, DEFAULT_MODULES } from './core/parts.js';
+import { MODULE_TYPES, variantOf, DEFAULT_MODULES, MAX_MODULES } from './core/parts.js';
 import { hooks } from './core/hooks.js';
 import { SIM, bench, PINS, PIN_ORDER, wires, addWire, removeWire, clearWires, wireOf, refreshNet, powered, readPin, moduleState, boardLedOn, i2cDevices, sensorTemp,
-  checkDamage, tickSim, setBoard, addModule, removeModule, setVariant, moduleById, moduleLabel, resetBench } from './core/sim.js';
+  checkDamage, tickSim, setBoard, addModule, removeModule, setVariant, moduleById, moduleLabel, resetBench, isAnalyzer } from './core/sim.js';
+import { canPoll, canModule, nodeOfCan } from './core/buses.js';
+import { analyzerActive } from './core/analyzer.js';
+import { initAnalyzer, openAnalyzer, analyzerBenchChanged } from './ui/analyzer.js';
 import { runChecks } from './core/checks.js';
 import { startProgram, stopProgram, isRunning } from './core/runtime.js';
 import { suggestWiring, exampleCode } from './core/codegen.js';
@@ -81,6 +84,12 @@ function hwChanged(){
   renderFlow();
 }
 function codeChanged(){ UI.rev.code++; renderFlow(); }
+/** 硬體特徵：開發板、模組與接線。邏輯分析儀只是量測儀器（探棒不影響電路），接上或移除不需要重新燒錄 */
+function hwSig(){
+  const la = new Set(bench.modules.filter(isAnalyzer).map(m => m.id)), onLa = id => la.has(id.split('.')[0]);
+  return JSON.stringify([bench.board.id, bench.modules.filter(m => !la.has(m.id)).map(m => [m.id, m.type, m.variant]), wires.filter(w => !onLa(w.a) && !onLa(w.b)).map(w => [w.a, w.b].sort().join('-')).sort()]);
+}
+UI.hwSig = null;
 function renderFlow(){
   const st = { check: checkDone() ? 'done' : sameRev(UI.checkBad) ? 'bad' : 'need', build: buildDone() ? 'done' : 'need', flash: flashDone() ? 'done' : checkDone() && buildDone() ? 'need' : '' };
   const mark = { done:'✓', bad:'✕', need:'', '':'' };
@@ -111,9 +120,10 @@ function renderBoardInfo(){
   $('#serialInfo').textContent = `${b.vcp.periph} · ${b.form === 'pill' ? 'USB 轉 TTL（PA9／PA10）' : `${b.prog} 虛擬序列埠`} · 115200 8N1`;
   $('#pinmapNote').textContent = `${b.name} 的 ${b.header.length} 腳排針。左右兩欄對應實際排列，1 號腳在左上。I2C：${b.i2c.scl}（SCL）、${b.i2c.sda}（SDA）。`;
 }
+let wideBench = false;
 function onBenchChanged(){
-  if (G.ready){ buildBench(); setUsbVisible(SIM.usb); }
-  fillSelects(); renderPinMap(); renderBoardInfo(); renderInspector();
+  if (G.ready){ buildBench(); setUsbVisible(SIM.usb); const wide = bench.modules.some(m => m.slot >= 8); if (wide !== wideBench){ wideBench = wide; fitView(); } }
+  fillSelects(); renderPinMap(); renderBoardInfo(); renderInspector(); analyzerBenchChanged();
   afterWiring();
 }
 function changeBoard(id){
@@ -129,7 +139,11 @@ const ACTIONS = {
   changeBoard,
   setVariant:(id, vid) => { const m = moduleById(id); if (!m || m.variant === vid) return; setVariant(id, vid); showInspector('module', id); toast(`${moduleLabel(m)} 已換成 ${variantOf(m.type, vid).name}。`); },
   removeModule:id => { const m = moduleById(id); if (!m) return; const name = moduleLabel(m); removeModule(id); showInspector('overview'); toast(`已移除 ${name}。`); },
-  addModule:type => { const m = addModule(type); if (!m){ toast('工作台最多放 8 個模組。'); return; } showInspector('module', m.id); markModule(m.id); toast(`已新增 ${moduleLabel(m)}。到「接線」分頁按「建議接線」可以自動接好。`); },
+  addModule:type => { const m = addModule(type); if (!m){ toast(`工作台最多放 ${MAX_MODULES} 個模組。`); return; } showInspector('module', m.id); markModule(m.id); toast(isAnalyzer(m) ? `已新增 ${moduleLabel(m)}。按「建議接線」接好探棒後，點 3D 畫面上的分析儀就能看波形。` : `已新增 ${moduleLabel(m)}。到「接線」分頁按「建議接線」可以自動接好。`); },
+  openAnalyzer:id => openAnalyzer(id),
+  setTc:(id, k, v) => { const m = moduleById(id); if (m){ m.st[k] = v; outputsChanged(); } },
+  setNode:(id, on) => { const m = moduleById(id); if (m){ nodeOfCan(m).on = on; renderInspector(); toast(on ? '測試節點已開啟：會回 ACK，並每 500 ms 送出 ID 0x200。' : '測試節點已關閉：MCU 送出的訊框沒有人回 ACK。用 CAN 分析儀看看會發生什麼事。'); } },
+  eraseFlash:id => { const m = moduleById(id); if (m){ m.st.mem = new Map(); renderInspector(); toast('Flash 已全部抹除成 0xFF。'); } },
   press:(id, down) => pressButton(id, down),
   motion:id => triggerMotion(id), warm:id => warmSensor(id),
   setPot:(id, v) => { const m = moduleById(id); if (m){ m.st.pot = v; outputsChanged(); } },
@@ -208,7 +222,7 @@ function onPick(h){
   if (!h){ if (UI.sel || UI.selWire){ UI.sel = null; selectWire(null); refreshRings(); renderHint(); } return; }
   if (h.type === 'usb'){ setUsb(!SIM.usb); return; }
   if (h.type === 'part'){ openInspector('part', h.key); return; }
-  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); return; }
+  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); return; }
   if (h.type === 'touch'){ const m = moduleById(h.id); if (m?.type === 'pir') triggerMotion(h.id); else if (m) warmSensor(h.id); return; }
   if (h.type === 'wire'){ UI.sel = null; refreshRings(); renderHint(); selectWire(h.w); return; }
   if (h.type !== 'pin') return;
@@ -227,7 +241,7 @@ function tipFor(h){
   if (h.type === 'wire') return `<b>${esc(PINS[h.w.a].label)} → ${esc(PINS[h.w.b].label)}</b>\n點一下可拔除`;
   if (h.type === 'usb') return `<b>USB（${esc(b.prog)}）</b>\n點一下${SIM.usb ? '拔除' : '接上'}`;
   if (h.type === 'part'){ const p = boardParts(b).find(x => x.key === h.key); return `<b>${esc(p?.part || '')}</b>\n${esc(p?.name || '')}\n點一下查看資料與 datasheet`; }
-  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n點一下查看資料、更換型號` : ''; }
+  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : '點一下查看資料、更換型號'}` : ''; }
   if (h.type === 'press'){ if (h.which === 'B1') return `<b>${esc(b.btn.name)}</b>（${esc(b.btn.pin)}）\n按住＝按下`; if (h.which === 'RESET') return '<b>RESET</b>\n按下後放開會重新執行程式'; const m = moduleById(h.which); return m ? `<b>${esc(moduleLabel(m))}</b>\n按住＝OUT 高電位` : ''; }
   if (h.type === 'touch'){ const m = moduleById(h.id); return !m ? '' : m.type === 'pir' ? `<b>${esc(moduleLabel(m))}</b>\n點一下模擬有人經過` : `<b>${esc(moduleLabel(m))}</b>\n約 ${sensorTemp(m).toFixed(2)} °C\n點一下模擬手指加溫`; }
   return '';
@@ -271,7 +285,7 @@ function setupPointer(){
 
 /* ---- 電源、輸出與聲音 ---- */
 let wasPowered = null;
-function afterWiring(){ refreshNet(); hwChanged(); electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store(); }
+function afterWiring(){ refreshNet(); const sig = hwSig(); if (sig !== UI.hwSig){ UI.hwSig = sig; hwChanged(); } else renderFlow(); electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store(); }
 function electricalUpdate(){
   const p = powered();
   for (const m of checkDamage()) toast(`${moduleLabel(m)}（${variantOf(m.type, m.variant).part}）的電壓過高，已損壞（模擬）。改好接線後到「檢測」更換。`, 'err');
@@ -320,7 +334,7 @@ function applyOutputs(){
   if (G.ready){
     setLed('PWR', p); bench.board.leds.forEach(l => setLed(l.name, boardLedOn(l)));
     for (const m of bench.modules){
-      const s = moduleState(m); updateModule(m, s, t);
+      const s = isAnalyzer(m) ? { active:p && analyzerActive(m) } : m.type === 'can' ? { on:!!m.st.node?.on && p } : moduleState(m); updateModule(m, s, t);
       if (m.type === 'buzzer' && s.on) buzz = true;
       if (m.type === 'relay'){ if (audio.relays[m.id] !== undefined && audio.relays[m.id] !== s.on) relayClick(); audio.relays[m.id] = s.on; }
     }
@@ -372,6 +386,7 @@ function loop(t){
   requestAnimationFrame(loop);
   const dt = Math.min(.1, (t - lastT) / 1000); lastT = t; frame++;
   tickSim(dt); R.controls.update();
+  if (canModule()) canPoll();
   const now = performance.now(); let changed = false;
   for (const [id, mk] of Object.entries(UI.marks)) if (mk.until < now){ delete UI.marks[id]; changed = true; }
   if (changed) refreshRings();
@@ -387,7 +402,7 @@ function loop(t){
 }
 
 /* ---- iPhone／iPad：長按按鈕、清單或 3D 畫面時不要跳出選單 ---- */
-document.addEventListener('contextmenu', e => { if (e.target.closest('button, .tabs, .flow, .plist, .wires li, .results li, .chips, .stage, .pill')) e.preventDefault(); });
+document.addEventListener('contextmenu', e => { if (e.target.closest('button, .tabs, .flow, .plist, .wires li, .results li, .chips, .stage, .pill, .la-wave, .la-bar, .la-tabs')) e.preventDefault(); });
 
 /* ---- 主題變更時更新 3D 背景 ---- */
 function themeChanged(){ if (R.scene) R.scene.background = new THREE.Color(sceneBg()); }
@@ -397,7 +412,7 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
 
 /* ---- 啟動 ---- */
 (async function boot(){
-  initTheme(); wireHooks(); initInspector(ACTIONS);
+  initTheme(); wireHooks(); initInspector(ACTIONS); initAnalyzer();
   const saved = restore();
   resetBench();
   setBoard(saved && BOARD_BY_ID[saved.board] ? saved.board : DEFAULT_BOARD, true);

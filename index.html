@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>MCU 模擬實驗室</title>
-<meta name="description" content="在瀏覽器裡用 3D 模擬 ST、TI、NXP 共 116 種 MCU 的接線、檢測接線錯誤，並編譯燒錄 C/HAL 程式。">
+<meta name="description" content="在瀏覽器裡用 3D 模擬 ST、TI、NXP 共 116 種 MCU 的接線、檢測接線錯誤、編譯燒錄 C 程式，並用邏輯分析儀觀察 I2C、UART、SPI、CAN 訊號。">
 <meta name="theme-color" content="#e7ecef" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1418" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -135,6 +135,8 @@
           <li><b>TI · TivaWare</b>：<code>GPIOPinWrite／Read</code>、<code>SysCtlDelay</code>、<code>I2CMaster*</code>、<code>ADCSequenceDataGet</code>、<code>UARTprintf</code></li>
           <li><b>TI · C2000Ware</b>：<code>GPIO_writePin／togglePin／readPin</code>、<code>DEVICE_DELAY_US</code>、<code>I2C_*</code>、<code>ADC_readResult</code></li>
           <li><b>NXP · MCUXpresso SDK</b>：<code>GPIO_PinWrite／PinRead／PortToggle</code>、<code>SDK_DelayAtLeastUs</code>、<code>I2C_Master*</code>／<code>LPI2C_Master*</code>、<code>ADC16／LPADC／ADC</code>、<code>PRINTF</code></li>
+          <li><b>SPI</b>：<code>HAL_SPI_TransmitReceive</code>、<code>DL_SPI_*Data8</code>、<code>EUSCI_A/B_SPI_*</code>、<code>SSIDataPut／Get</code>、<code>SPI_write/readDataBlockingNonFIFO</code>、<code>DSPI／LPSPI／SPI_MasterTransferBlocking</code></li>
+          <li><b>CAN</b>：<code>HAL_CAN_*</code>（bxCAN）、<code>HAL_FDCAN_*</code>、<code>DL_MCAN_*</code>、<code>CANMessageSet／Get</code>、<code>CAN_sendMessage／readMessage</code>（C2000）、<code>FLEXCAN_*</code></li>
           <li>其他同前綴的設定函式（例如時脈、腳位多工）會在編譯時提示「略過」，不影響執行。按「載入範例程式」可以看到目前晶片的完整寫法。</li>
         </ul>
       </details>
@@ -152,6 +154,20 @@
       <pre class="serial" id="serial" aria-live="off"></pre>
     </div>
   </aside>
+</div>
+<div class="la" id="la" hidden role="dialog" aria-modal="true" aria-labelledby="laTitle">
+  <header class="la-top">
+    <div class="la-ttl"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M1 15h4V6h4v10h4V8h4v7h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><div><strong id="laTitle">邏輯分析儀</strong><small id="laSub"></small></div></div>
+    <button class="btn sm" id="laClose" type="button">關閉</button>
+  </header>
+  <div class="la-bar" id="laBar"></div>
+  <div class="la-main">
+    <div class="la-wave"><div class="la-scroll"><canvas id="laCv" aria-label="波形：單指拖曳平移、雙指縮放，點彩色格子看說明"></canvas></div><div class="la-msg" id="laMsg" hidden></div><div class="la-time" id="laTime"></div></div>
+    <aside class="la-side">
+      <div class="la-tabs" role="tablist"><button type="button" data-tab="info" role="tab">說明</button><button type="button" data-tab="learn" role="tab">教學</button><button type="button" data-tab="list" role="tab">解碼清單</button></div>
+      <div class="la-pane" id="laPane"></div>
+    </aside>
+  </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/src/main.js"></script>

@@ -2,6 +2,7 @@
 // ST 排針採各板的 Arduino 相容腳位（Nucleo）或晶片腳位名稱（Pill、Discovery），每塊 30–40 腳。
 import { TI_BOARDS } from './boards-ti.js';
 import { NXP_BOARDS } from './boards-nxp.js';
+import { extendHeader, pinTags } from './board-kit.js';
 
 /* ---------- 板型（外形與排針配置） ---------- */
 export const FORMS = {
@@ -87,10 +88,21 @@ function buildBoard(r){
   const base = mcu.match(/^STM32[A-Z0-9]{4}[A-Z0-9]{2}/)[0].toLowerCase();
   const ard = { ...(form === 'n144' ? ARD144 : form === 'n32' ? ARD32 : ARD64), ...(extra.pins || {}) };
   const i2c = form === 'n32' ? { bus:'I2C1', scl:'D5', sda:'D4' } : form === 'pill' ? { bus:'I2C1', scl:'PB6', sda:'PB7' } : form === 'disco' ? { bus:'I2C1', scl:'PB6', sda:'PB9' } : { bus:'I2C1', scl:'D15', sda:'D14' };
+  // SPI：Nucleo-64 與 Discovery 用 SPI2（避開 D13＝PA5 的板載 LED）；Nucleo-32 用 PA5–PA7（避開 D13＝PB3 的 LD3）
+  const spi = { n144:{ bus:'SPI1', inst:'SPI1', sck:'D13', miso:'D12', mosi:'D11', cs:'D10' }, n64:{ bus:'SPI2', inst:'SPI2', sck:'PB13', miso:'PB14', mosi:'PB15', cs:'PB12' },
+    n32:{ bus:'SPI1', inst:'SPI1', sck:'A4', miso:'A5', mosi:'A6', cs:'D3' }, pill:{ bus:'SPI1', inst:'SPI1', sck:'PA5', miso:'PA6', mosi:'PA7', cs:'PA4' }, disco:{ bus:'SPI2', inst:'SPI2', sck:'PB13', miso:'PB14', mosi:'PB15', cs:'PB12' } }[form];
+  // CAN：G4、H5、H7、U5 是 FDCAN；F0／F1／F3 是單一 bxCAN（hcan）；F2／F4／F7／L4 是 CAN1（hcan1）
+  const NOCAN = ['STM32F401', 'STM32F411', 'STM32F410', 'STM32F030', 'STM32G071', 'STM32L152', 'STM32L073', 'STM32L053'];
+  const fd = ['H7', 'H5', 'G4', 'U5'].includes(series), single = ['F0', 'F1', 'F3'].includes(series);
+  const canPins = form === 'n64' ? { rx:'PA11', tx:'PA12' } : form === 'n32' ? { rx:'D10', tx:'D2' } : form === 'pill' ? { rx:'PB8', tx:'PB9' } : { rx:'PD0', tx:'PD1' };
+  const noCan = NOCAN.some(x => mcu.startsWith(x)) ? `${mcu.slice(0, 9)} 沒有 CAN 控制器。要做 CAN 實驗，請換成 F446、F103、G474、H743 等有 CAN 的晶片。` : null;
+  const can = noCan ? null : { bus: fd ? 'FDCAN1' : single ? 'CAN' : 'CAN1', inst: fd ? 'FDCAN1' : 'CAN1', handle: fd ? 'hfdcan1' : single ? 'hcan' : 'hcan1', drv: fd ? 'fdcan' : 'bxcan', ...canPins };
+  const o = { spi, can };
+  const labels = extendHeader(HEADERS[form], ard, [vcp[1], vcp[2], spi.sck, spi.miso, spi.mosi, spi.cs, can?.tx, can?.rx]);
   const counts = {};
-  const header = HEADERS[form].map(label => {
+  const header = labels.map(label => {
     const n = counts[label] = (counts[label] || 0) + 1;
-    const total = HEADERS[form].filter(x => x === label).length;
+    const total = labels.filter(x => x === label).length;
     const pid = 'J.' + (total > 1 ? `${label}~${n}` : label);
     const kind = label === 'GND' ? 'gnd' : (label === '3V3' || label === '5V') ? 'pwr' : 'gpio';
     const mcuPin = kind !== 'gpio' ? null : (ard[label] || label);
@@ -102,6 +114,7 @@ function buildBoard(r){
       if (mcuPin === vcp[1] || mcuPin === vcp[2]) tags.push('vcp');
       if ((form === 'n64' || form === 'n144' || form === 'n32') && PWM_D.includes(label)) tags.push('pwm');
       if (leds.some(l => l[1] === mcuPin)) tags.push('led');
+      tags.push(...pinTags(label, mcuPin, o));
     }
     return { id:pid, label, kind, mcu:mcuPin, tags };
   });
@@ -115,7 +128,7 @@ function buildBoard(r){
     leds: leds.map(([n, pin, color, activeLow]) => ({ name:n, pin, color, hex:LED_HEX[color], activeLow:!!activeLow })),
     btn: btn ? { name:btn[0], pin:btn[1], activeLow:btn[2] } : null,
     vcp: { periph:vcp[0], tx:vcp[1], rx:vcp[2], handle:vcp[3] },
-    i2c:{ ...i2c, inst:'I2C1' }, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
+    i2c:{ ...i2c, inst:'I2C1' }, spi, noSpi:null, can, noCan, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
     links: [
       { label:`${mcu} Datasheet（PDF）`, url:`https://www.st.com/resource/en/datasheet/${base}.pdf` },
       { label:'MCU 產品頁（參考手冊、勘誤表）', url:`https://www.st.com/en/microcontrollers-microprocessors/${base}.html` },

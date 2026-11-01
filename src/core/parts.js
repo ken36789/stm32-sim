@@ -80,11 +80,55 @@ export const MODULE_TYPES = {
       { id:'relay-ssr', name:'固態繼電器模組', part:'Omron G3MB-202P', grade:3, vmin:4.5, better:'無機械接點、靜音、壽命長（只能切換交流負載）', specs:[['輸入', '5 V'], ['負載', '2 A 100–240 VAC'], ['觸發', 'IN 高電位']], links:[ds('搜尋 Datasheet', g('Omron G3MB-202P'))] },
     ],
   },
+  tc: {
+    name:'SPI 熱電偶模組', short:'熱電偶', w:22, d:28, pcb:0xa3262a, bus:'spi',
+    pins:[['VCC', '電源（依型號）'], ['GND', '接地'], ['SCK', 'SPI 時脈（接 MCU 的 SCK）'], ['CS', '片選：低電位時被選中（接一支 GPIO）'], ['SO', '資料輸出（接 MCU 的 MISO）']],
+    variants:[
+      { id:'max6675', name:'MAX6675 K 型熱電偶模組', part:'Maxim MAX6675', grade:1, dev:'max6675', vmin:3.0, vmax:5.5, specs:[['量測範圍', '0–1024 °C'], ['解析度', '0.25 °C（12 位元）'], ['介面', 'SPI 唯讀，一次 16 位元'], ['SPI 時脈', '最高 4.3 MHz'], ['工作電壓', '3.0–5.5 V']], links:[ds('MAX6675 Datasheet（PDF）', 'https://www.analog.com/media/en/technical-documentation/data-sheets/MAX6675.pdf')] },
+      { id:'max31855', name:'MAX31855K 熱電偶模組', part:'Maxim MAX31855K', grade:2, dev:'max31855', vmin:3.0, vmax:3.6, better:'可以量負溫度，還有冷接點溫度與斷線故障旗標', specs:[['量測範圍', '−200–1350 °C'], ['解析度', '0.25 °C（14 位元）'], ['介面', 'SPI 唯讀，一次 32 位元'], ['SPI 時脈', '最高 5 MHz'], ['工作電壓', '3.0–3.6 V']], links:[ds('MAX31855 Datasheet（PDF）', 'https://www.analog.com/media/en/technical-documentation/data-sheets/MAX31855.pdf')] },
+    ],
+  },
+  flash: {
+    name:'SPI Flash 記憶體', short:'Flash', w:22, d:28, pitch:4, pcb:0x2b3a8c, bus:'spi',
+    pins:[['VCC', '電源 3.3 V'], ['GND', '接地'], ['CLK', 'SPI 時脈（接 MCU 的 SCK）'], ['DI', '資料輸入（接 MCU 的 MOSI）'], ['DO', '資料輸出（接 MCU 的 MISO）'], ['CS', '片選：低電位時被選中（接一支 GPIO）']],
+    variants:[
+      { id:'w25q32', name:'W25Q32JV 4 MB SPI Flash', part:'Winbond W25Q32JV', grade:1, dev:'w25q', cap:0x16, did:0x15, bytes:4 * 1024 * 1024, vmin:2.7, vmax:3.6, specs:[['容量', '32 Mbit（4 MB）'], ['JEDEC ID', 'EF 40 16'], ['頁大小', '256 位元組（一次最多寫一頁）'], ['抹除單位', '4 KB 磁區'], ['SPI 時脈', '最高 133 MHz'], ['工作電壓', '2.7–3.6 V']], links:[ds('搜尋 Datasheet', g('Winbond W25Q32JV'))] },
+      { id:'w25q128', name:'W25Q128JV 16 MB SPI Flash', part:'Winbond W25Q128JV', grade:2, dev:'w25q', cap:0x18, did:0x17, bytes:16 * 1024 * 1024, vmin:2.7, vmax:3.6, better:'容量是 4 倍（16 MB），適合存放圖片或長時間的資料紀錄', specs:[['容量', '128 Mbit（16 MB）'], ['JEDEC ID', 'EF 40 18'], ['頁大小', '256 位元組'], ['抹除單位', '4 KB 磁區'], ['SPI 時脈', '最高 133 MHz'], ['工作電壓', '2.7–3.6 V']], links:[ds('搜尋 Datasheet', g('Winbond W25Q128JV'))] },
+    ],
+  },
+  can: {
+    name:'CAN 收發器模組', short:'CAN', w:24, d:28, pitch:4, pcb:0x1d4f91, bus:'can',
+    pins:[['VCC', '電源（依型號）'], ['GND', '接地'], ['TXD', '接 MCU 的 CAN_TX'], ['RXD', '接 MCU 的 CAN_RX'], ['CANH', 'CAN 匯流排高端（接分析儀）'], ['CANL', 'CAN 匯流排低端（接分析儀）']],
+    variants:[
+      { id:'can-230', name:'SN65HVD230 CAN 收發器', part:'TI SN65HVD230', grade:1, vmin:3.0, vmax:3.6, specs:[['工作電壓', '3.3 V'], ['最高速率', '1 Mbps'], ['終端電阻', '板上 120 Ω'], ['測試節點', '模組內建，每 500 ms 送出 ID 0x200']], links:[ds('TI SN65HVD230 Datasheet（PDF）', 'https://www.ti.com/lit/ds/symlink/sn65hvd230.pdf')] },
+      { id:'can-1050', name:'TJA1050 CAN 收發器', part:'NXP TJA1050', grade:1, vmin:4.75, vmax:5.25, specs:[['工作電壓', '5 V（接 3V3 不會動作）'], ['最高速率', '1 Mbps'], ['終端電阻', '板上 120 Ω'], ['測試節點', '模組內建，每 500 ms 送出 ID 0x200']], links:[ds('NXP TJA1050 Datasheet（PDF）', 'https://www.nxp.com/docs/en/data-sheet/TJA1050.pdf')] },
+      { id:'can-332', name:'TCAN332 CAN FD 收發器', part:'TI TCAN332', grade:2, vmin:3.0, vmax:3.6, better:'3.3 V 供電、支援 CAN FD（最高 5 Mbps）', specs:[['工作電壓', '3.3 V'], ['最高速率', 'CAN FD 5 Mbps'], ['終端電阻', '板上 120 Ω'], ['測試節點', '模組內建，每 500 ms 送出 ID 0x200']], links:[ds('搜尋 Datasheet', g('TI TCAN332'))] },
+    ],
+  },
 };
 
-export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay'];
+/* ---------- 量測儀器：邏輯分析儀（每一種都會顯示波形，可以點進去看解說與教學） ---------- */
+const LA_VARIANTS = (pre, proto) => [
+  { id:`${pre}-24m`, name:'USB 邏輯分析儀 24 MHz', part:'Cypress CY7C68013A（FX2LP）', grade:1, rate:24e6, specs:[['取樣率', '最高 24 MS/s'], ['通道', '8 通道'], ['輸入', '0–5 V 邏輯電位'], ['解碼', proto]], links:[ds('搜尋 CY7C68013A Datasheet', g('Cypress CY7C68013A FX2LP'))] },
+  { id:`${pre}-100m`, name:'高速邏輯分析儀 100 MHz', part:'FPGA ＋ USB 2.0', grade:2, rate:100e6, better:'取樣率提高到 100 MS/s，訊號邊緣的位置更準確', specs:[['取樣率', '最高 100 MS/s'], ['通道', '16 通道'], ['輸入', '可調門檻 0.9–4 V'], ['解碼', proto]], links:[ds('搜尋 sigrok 支援的邏輯分析儀', 'https://sigrok.org/wiki/Supported_hardware')] },
+];
+const LA = (name, short, proto, pins, extra = {}) => ({ name, short, w:24, d: pins.length > 4 ? 28 : 24, pcb:0x1a1d22, analyzer:proto, pins, variants:LA_VARIANTS(short, proto.toUpperCase()), ...extra });
+const GND_PROBE = ['GND', '接地：一定要和開發板共地，量到的電位才正確'];
+Object.assign(MODULE_TYPES, {
+  la_i2c: LA('I2C 分析儀', 'I2C 分析', 'i2c', [['SCL', '探棒：接 I2C 的 SCL 線'], ['SDA', '探棒：接 I2C 的 SDA 線'], GND_PROBE]),
+  la_uart: LA('UART 分析儀', 'UART 分析', 'uart', [['TX', '探棒：接 MCU 的 TX（MCU 送出的資料）'], ['RX', '探棒：接 MCU 的 RX（MCU 收到的資料）'], GND_PROBE]),
+  la_spi: LA('SPI 分析儀', 'SPI 分析', 'spi', [['SCK', '探棒：SPI 時脈'], ['MOSI', '探棒：主機送出的資料'], ['MISO', '探棒：從機回傳的資料'], ['CS', '探棒：片選'], GND_PROBE]),
+  la_can: LA('CAN 分析儀', 'CAN 分析', 'can', [['CANH', '探棒：CAN 匯流排高端'], ['CANL', '探棒：CAN 匯流排低端'], GND_PROBE], {
+    variants:[
+      { id:'can-24m', name:'邏輯分析儀＋CAN 差動探棒', part:'CY7C68013A ＋ SN65HVD230', grade:1, rate:24e6, specs:[['取樣率', '最高 24 MS/s'], ['輸入', 'CANH／CANL 差動'], ['模式', '只聽不回（不送 ACK）'], ['解碼', 'CAN 2.0A／B']], links:[ds('TI SN65HVD230 Datasheet（PDF）', 'https://www.ti.com/lit/ds/symlink/sn65hvd230.pdf')] },
+      { id:'can-scope', name:'數位示波器（CAN 解碼）', part:'100 MHz 4 通道示波器', grade:2, rate:100e6, better:'取樣率更高，可以看清楚 CANH／CANL 的電壓變化', specs:[['取樣率', '最高 100 MS/s（顯示）'], ['輸入', '2 通道電壓'], ['模式', '只聽不回（不送 ACK）'], ['解碼', 'CAN 2.0A／B']], links:[ds('搜尋 CAN 匯流排量測教學', g('CAN bus oscilloscope decode'))] },
+    ] }),
+});
+
+export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay', 'tc', 'flash', 'can', 'la_i2c', 'la_uart', 'la_spi', 'la_can'];
+export const MODULE_GROUPS = [['輸出', ['led', 'rgb', 'buzzer', 'relay']], ['輸入與感測', ['button', 'pir', 'pot', 'temp']], ['SPI／CAN 元件', ['tc', 'flash', 'can']], ['量測儀器（邏輯分析儀）', ['la_i2c', 'la_uart', 'la_spi', 'la_can']]];
 export const variantOf = (type, vid) => MODULE_TYPES[type].variants.find(v => v.id === vid) || MODULE_TYPES[type].variants[0];
-export const MAX_MODULES = 8;
+export const MAX_MODULES = 12;
 export const DEFAULT_MODULES = [
   { type:'led', variant:'led-red' },
   { type:'button', variant:'btn-tact' },
@@ -94,4 +138,4 @@ export const DEFAULT_MODULES = [
 ];
 
 /* ---------- 麵包板電源軌 ---------- */
-export const RAIL_HOLES = 10;
+export const RAIL_HOLES = 14;

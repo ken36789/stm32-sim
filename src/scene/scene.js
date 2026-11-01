@@ -8,7 +8,8 @@ import { WIRE_COLORS, mulberry32 } from './util.js';
 import { buildModule } from './modules3d.js';
 
 export const DESK_Y = -7, PIN_TOP_BOARD = 8.5, MOD_PIN_TOP = 5.5, RAIL_TOP = -1.2;
-export const SLOTS = [[40, -45], [68, -45], [40, -15], [68, -15], [40, 15], [68, 15], [40, 45], [68, 45]];
+// 12 個模組位置：3 欄 × 4 列（第 3 欄在需要時才會用到）
+export const SLOTS = [[40, -45], [68, -45], [40, -15], [68, -15], [40, 15], [68, 15], [40, 45], [68, 45], [96, -45], [96, -15], [96, 15], [96, 45]];
 export const R = {};
 export const G = { pins:{}, leds:{}, caps:{}, mods:{}, hit:[], wireHit:[], groups:{}, glowTex:null, usb:null, ready:false };
 let stageEl = null;
@@ -291,7 +292,7 @@ export function disposeWireMesh(w){
 /* ---------- 視角與狀態 ---------- */
 export function fitView(){
   const W = FORMS[bench.board.form].w, a = R.camera.aspect || 1.4;
-  const minX = -W - 6, maxX = 84, width = maxX - minX, depth = Math.max(140, bench.board.header.length / 2 * 5 + 40);
+  const minX = -W - 6, maxX = bench.modules.some(m => m.slot >= 8) ? 112 : 84, width = maxX - minX, depth = Math.max(140, bench.board.header.length / 2 * 5 + 40);
   const vf = THREE.MathUtils.degToRad(R.camera.fov), hf = 2 * Math.atan(Math.tan(vf / 2) * a);
   const dist = Math.max(width / 2 / Math.tan(hf / 2), depth / 2 / Math.tan(vf / 2)) * 1.08;
   R.controls.target.set((minX + maxX) / 2, -2, 6);

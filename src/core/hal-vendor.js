@@ -1,21 +1,25 @@
 // TI 與 NXP SDK 的模擬：MSPM0 DriverLib、MSP430 DriverLib、TivaWare、C2000Ware driverlib、MCUXpresso SDK。
 // 只實作常用的 GPIO、延遲、I2C、ADC 與輸出函式；其他同前綴的設定函式由編譯器以「略過」處理。
-import { SIM, readPin, i2cFind, adcRead, bench } from './sim.js';
+import { SIM, readPin, adcRead, bench, pinWrite, pinToggle } from './sim.js';
+import { i2cWrite, i2cRead, i2cPrefetch, i2cTraceRead, spiTransfer, CAN, canSend, canPending, canRecv } from './buses.js';
 
 /** ctx：{ chk, sleep, outputs, print } */
 export function vendorAPI(ctx){
   const { chk, sleep, outputs, print } = ctx;
   const clk = () => bench.board.mhz * 1e6;
   const wait = async sec => { chk(); const end = performance.now() + sec * 1000; do { await sleep(Math.max(0, Math.min(end - performance.now(), 100))); chk(); } while (performance.now() < end); };
-  const write = (pin, v) => { SIM.mode[pin] = 'out'; SIM.out[pin] = v ? 1 : 0; };
-  const toggle = pin => { SIM.mode[pin] = 'out'; SIM.out[pin] = SIM.out[pin] ? 0 : 1; };
+  const write = (pin, v) => pinWrite(pin, v);
+  const toggle = pin => pinToggle(pin);
   const read = pin => { if (!SIM.mode[pin]){ SIM.mode[pin] = 'in'; outputs(); } return readPin(pin); };
   const bits = mask => { const o = []; for (let b = 0; b < 32; b++) if ((mask >>> 0) & (2 ** b)) o.push(b); return o; };
   const scale = n => Math.round(adcRead() / 4095 * (2 ** n - 1));
   const onBus = inst => inst && inst.name === bench.board.i2c.inst;
-  const dev = (inst, addr) => { if (!onBus(inst)) return null; const d = i2cFind((addr >>> 0) & 0x7F); return d && d !== 'conflict' ? d.dev : null; };
-  const tx = (inst, addr, bytes) => { const d = dev(inst, addr); return !!(d && d.tx(bytes.map(b => b & 0xFF))); };
-  const rx = (inst, addr, n) => { const d = dev(inst, addr); return d ? d.rx(n) : null; };
+  const tx = (inst, addr, bytes) => onBus(inst) && i2cWrite((addr >>> 0) & 0x7F, bytes);
+  const rx = (inst, addr, n) => onBus(inst) ? i2cRead((addr >>> 0) & 0x7F, n) : null;
+  // 逐位元組讀取：先取資料，讀完最後一個位元組時才記錄實際的傳輸
+  const pre = (inst, s) => { const d = onBus(inst) ? i2cPrefetch(s.addr & 0x7F, 16) : null; s.nak = !d; s.rxq = d ? [...d] : []; s.got = []; if (!d && onBus(inst)) i2cTraceRead(s.addr, [], true); };
+  const take = s => { const x = s.rxq.shift() ?? 0xFF; s.got.push(x); return x; };
+  const done = (inst, s) => { if (!s.nak && onBus(inst)) i2cTraceRead(s.addr, s.got, false); s.got = []; };
   const st = o => o.__i2c || (o.__i2c = { addr:0, recv:false, buf:[], rxq:[], nak:false, cur:0, count:0, mode:0 });
   const obj = (names, mk) => Object.fromEntries(names.map(n => [n, mk(n)]));
   const api = {};
@@ -61,7 +65,7 @@ export function vendorAPI(ctx){
     ADC_BUSY:1, ADC_NOTBUSY:0,
   });
   for (const P of ['EUSCI_B', 'USCI_B']){
-    const rs = b => { const s = st(b); const d = rx(b, s.addr, 16); s.nak = !d; s.rxq = d ? [...d] : []; };
+    const rs = b => pre(b, st(b));
     Object.assign(api, {
       [`${P}_I2C_setSlaveAddress`]:(b, a) => { st(b).addr = a; },
       [`${P}_I2C_setMode`]:(b, m) => { st(b).mode = m; },
@@ -72,9 +76,9 @@ export function vendorAPI(ctx){
       [`${P}_I2C_masterSendMultiByteStop`]:b => { const s = st(b); s.nak = !tx(b, s.addr, s.buf); },
       [`${P}_I2C_masterReceiveStart`]:b => { chk(); rs(b); },
       [`${P}_I2C_masterReceiveMultiByteStart`]:b => { chk(); rs(b); },
-      [`${P}_I2C_masterReceiveMultiByteNext`]:b => st(b).rxq.shift() ?? 0xFF,
-      [`${P}_I2C_masterReceiveMultiByteFinish`]:b => st(b).rxq.shift() ?? 0xFF,
-      [`${P}_I2C_masterReceiveSingleByte`]:b => { rs(b); return st(b).rxq.shift() ?? 0xFF; },
+      [`${P}_I2C_masterReceiveMultiByteNext`]:b => take(st(b)),
+      [`${P}_I2C_masterReceiveMultiByteFinish`]:b => { const x = take(st(b)); done(b, st(b)); return x; },
+      [`${P}_I2C_masterReceiveSingleByte`]:b => { rs(b); const x = take(st(b)); done(b, st(b)); return x; },
       [`${P}_I2C_getInterruptStatus`]:(b, m) => st(b).nak ? (m & 0x20) : 0,
       [`${P}_I2C_clearInterrupt`]:b => { st(b).nak = false; },
       [`${P}_I2C_NAK_INTERRUPT`]:0x20, [`${P}_I2C_TRANSMIT_MODE`]:0x10, [`${P}_I2C_RECEIVE_MODE`]:0x00,
@@ -99,8 +103,10 @@ export function vendorAPI(ctx){
         else if (cmd === 0x01){ s.buf.push(s.cur); }
         else if (cmd === 0x05){ s.buf.push(s.cur); s.nak = !tx(b, s.addr, s.buf); }
       } else {
-        if (cmd === 0x07 || cmd === 0x0B){ const d = rx(b, s.addr, cmd === 0x07 ? 1 : 16); s.nak = !d; s.rxq = d ? [...d] : []; }
-        s.cur = s.rxq.shift() ?? 0xFF;
+        if (cmd === 0x07){ const d = rx(b, s.addr, 1); s.nak = !d; s.cur = d ? d[0] : 0xFF; return; }
+        if (cmd === 0x0B) pre(b, s);
+        s.cur = take(s);
+        if (cmd === 0x05) done(b, s);
       }
     },
     I2CMasterBusy:() => false, I2CMasterBusBusy:() => false, I2CMasterErr:b => st(b).nak ? 0x04 : 0, I2CMasterDataGet:b => st(b).cur,
@@ -163,8 +169,69 @@ export function vendorAPI(ctx){
     ADC_GetChannelConversionResult:(b, ch, info) => { chk(); if (info && typeof info === 'object') info.result = scale(12); return true; },
     ADC_GetChannelStatusFlags:() => 1, ADC_GetChannelConversionValue:() => { chk(); return scale(12); },
     PRINTF:(f, ...a) => print(f, a),
+    CLOCK_GetFreq:() => clk(), CS_getSMCLK:() => clk(),
   });
   Object.assign(api, obj(['I2C0', 'I2C1', 'I2C2', 'I2C3', 'I2C4', 'LPI2C0', 'LPI2C1', 'LPI2C2', 'LPI2C3', 'LPI2C4', 'ADC0', 'ADC1'], n => ({ name:n })));
+  /* ---- SPI（各家 SDK 的位元組傳輸函式） ---- */
+  const spiQ = o => o.__spi || (o.__spi = []);
+  const spiOk = o => !o?.name || !bench.board.spi || o.name === bench.board.spi.inst;
+  const xfer1 = (o, b) => { chk(); const r = spiOk(o) ? spiTransfer([b])[0] : 0xFF; if (o && typeof o === 'object') spiQ(o).push(r); return r; };
+  const pop = o => { chk(); return o && typeof o === 'object' ? spiQ(o).shift() ?? 0xFF : 0xFF; };
+  const blk = (base, x) => { chk(); if (!x || !spiOk(base)) return 1; const n = Number(x.dataSize) || 0, txd = x.txData, r = spiTransfer(Array.from({ length:n }, (_, k) => (txd && txd[k]) ?? 0)); if (x.rxData && typeof x.rxData === 'object') r.forEach((v, k) => { x.rxData[k] = v; }); return 0; };
+  Object.assign(api, {
+    DL_SPI_transmitDataBlocking8:(o, b) => { xfer1(o, b); }, DL_SPI_transmitData8:(o, b) => { xfer1(o, b); },
+    DL_SPI_receiveDataBlocking8:o => pop(o), DL_SPI_receiveData8:o => pop(o), DL_SPI_isBusy:() => false, DL_SPI_isRXFIFOEmpty:o => !spiQ(o).length,
+    SPI_0_INST:{ name:'SPI_0' }, SPI_1_INST:{ name:'SPI_1' },
+    SSIDataPut:(o, b) => { xfer1(o, b); }, SSIDataGet:(o, buf) => { const r = pop(o); if (buf && typeof buf === 'object') buf[0] = r; }, SSIDataGetNonBlocking:(o, buf) => { const r = pop(o); if (buf && typeof buf === 'object') buf[0] = r; return 1; }, SSIBusy:() => false,
+    // C2000：8 位元模式下，寫入的資料要靠左對齊（data << 8），讀回的資料在低 8 位元
+    SPI_writeDataBlockingNonFIFO:(o, d) => { xfer1(o, ((Number(d) || 0) >> 8) & 0xFF); }, SPI_readDataBlockingNonFIFO:o => pop(o),
+    SPI_writeDataNonBlocking:(o, d) => { xfer1(o, ((Number(d) || 0) >> 8) & 0xFF); }, SPI_readDataNonBlocking:o => pop(o), SPI_isBusy:() => false,
+    DSPI_MasterTransferBlocking:blk, LPSPI_MasterTransferBlocking:blk, SPI_MasterTransferBlocking:blk,
+  });
+  for (const P of ['EUSCI_A', 'EUSCI_B', 'USCI_A', 'USCI_B']) Object.assign(api, {
+    [`${P}_SPI_transmitData`]:(o, b) => { xfer1(o, b); }, [`${P}_SPI_receiveData`]:o => pop(o), [`${P}_SPI_isBusy`]:() => 0,
+    [`${P}_SPI_getInterruptStatus`]:(o, m) => m, [`${P}_SPI_TRANSMIT_INTERRUPT`]:0x02, [`${P}_SPI_RECEIVE_INTERRUPT`]:0x01,
+  });
+  Object.assign(api, obj(['EUSCI_A0_BASE', 'EUSCI_A1_BASE', 'EUSCI_A2_BASE', 'EUSCI_A3_BASE', 'USCI_A0_BASE', 'USCI_A1_BASE', 'SSI0_BASE', 'SSI1_BASE', 'SSI2_BASE', 'SSI3_BASE', 'SPIA_BASE', 'SPIB_BASE', 'SPIC_BASE',
+    'SPI0', 'SPI1', 'SPI2', 'SPI3', 'SPI8', 'LPSPI0', 'LPSPI1', 'LPSPI2', 'LPSPI3', 'LPSPI4'], n => ({ name:n.replace('_BASE', '') })));
+
+  /* ---- CAN：MSPM0 MCAN、TivaWare、C2000 DCAN、NXP FlexCAN ---- */
+  const cbytes = (d, n) => Array.from({ length:Math.min(8, Math.max(0, Number(n) || 0)) }, (_, k) => (d && d[k]) ?? 0);
+  const flexData = f => Array.from({ length:8 }, (_, k) => f['dataByte' + k] ?? 0);
+  Object.assign(api, {
+    DL_MCAN_writeMsgRam:(o, type, idx, el) => { chk(); if (el) CAN.mbox[idx] = { id:(Number(el.id) >>> 18) & 0x7FF, data:cbytes(el.data, el.dlc) }; },
+    DL_MCAN_TXBufAddReq:(o, idx) => { chk(); CAN.started = true; const m = CAN.mbox[idx]; if (m) canSend(m.id, m.data); return 0; },
+    DL_MCAN_getRxFIFOStatus:(o, fs) => { chk(); CAN.started = true; if (fs && typeof fs === 'object'){ fs.fillLvl = canPending(); fs.getIdx = 0; } },
+    DL_MCAN_readMsgRam:(o, type, buf, fifo, el) => { chk(); const fr = canRecv(); if (fr && el){ el.id = fr.id << 18; el.dlc = fr.data.length; el.xtd = 0; el.rtr = 0; el.data = [...fr.data, 0, 0, 0, 0, 0, 0, 0, 0].slice(0, 8); } },
+    DL_MCAN_writeRxFIFOAck:() => chk(), DL_MCAN_MEM_TYPE_BUF:0, DL_MCAN_MEM_TYPE_FIFO:1, DL_MCAN_RX_FIFO_NUM_0:0, DL_MCAN_RX_FIFO_NUM_1:1, CANFD0:{ name:'CANFD0' }, CANFD1:{ name:'CANFD1' },
+    CANInit:() => chk(), CANBitRateSet:() => { chk(); return 500000; }, CANEnable:() => { chk(); CAN.started = true; }, CANDisable:() => { CAN.started = false; },
+    CANMessageSet:(base, obj, msg, type) => {
+      chk(); if (!msg) return;
+      if (type === 0){ if (CAN.started) canSend(msg.ui32MsgID, cbytes(msg.pui8MsgData, msg.ui32MsgLen)); }
+      else CAN.objs[obj] = { id:Number(msg.ui32MsgID) & 0x7FF, mask:Number(msg.ui32MsgIDMask) || 0 };
+    },
+    CANStatusGet:(base, reg) => { chk(); if (reg !== 2) return 0; if (!canPending()) return 0; const o = Object.keys(CAN.objs)[0]; return o ? 1 << (o - 1) : 0; },
+    CANMessageGet:(base, obj, msg) => { chk(); const fr = canRecv(); if (fr && msg){ msg.ui32MsgID = fr.id; msg.ui32MsgLen = fr.data.length; if (msg.pui8MsgData && typeof msg.pui8MsgData === 'object') fr.data.forEach((x, k) => { msg.pui8MsgData[k] = x; }); } },
+    MSG_OBJ_TYPE_TX:0, MSG_OBJ_TYPE_TX_REMOTE:1, MSG_OBJ_TYPE_RX:2, MSG_OBJ_TYPE_RX_REMOTE:3, CAN_STS_CONTROL:0, CAN_STS_TXREQUEST:1, CAN_STS_NEWDAT:2, CAN_STS_MSGVAL:3,
+    MSG_OBJ_NO_FLAGS:0, MSG_OBJ_TX_INT_ENABLE:1, MSG_OBJ_RX_INT_ENABLE:2, MSG_OBJ_USE_ID_FILTER:4, CAN0_BASE:{ name:'CAN0' }, CAN1_BASE:{ name:'CAN1' },
+    CAN_initModule:() => chk(), CAN_setBitRate:() => chk(), CAN_startModule:() => { chk(); CAN.started = true; }, CAN_stopModule:() => { CAN.started = false; },
+    CAN_setupMessageObject:(base, obj, id, frame, type, mask, flags, len) => { chk(); CAN.objs[obj] = { id:Number(id) & 0x7FF, type, len:Number(len) || 8 }; },
+    CAN_sendMessage:(base, obj, len, data) => { chk(); const o = CAN.objs[obj]; if (CAN.started && o) canSend(o.id, cbytes(data, len)); },
+    CAN_readMessage:(base, obj, data) => { chk(); const fr = canRecv(); if (!fr) return false; if (data && typeof data === 'object') fr.data.forEach((x, k) => { data[k] = x; }); return true; },
+    CAN_MSG_FRAME_STD:0, CAN_MSG_FRAME_EXT:1, CAN_MSG_OBJ_TYPE_TX:0, CAN_MSG_OBJ_TYPE_TX_REMOTE:1, CAN_MSG_OBJ_TYPE_RX:2, CAN_MSG_OBJ_TYPE_RXTX_REMOTE:3, CAN_MSG_OBJ_NO_FLAGS:0,
+    CANA_BASE:{ name:'CANA' }, CANB_BASE:{ name:'CANB' },
+    FLEXCAN_GetDefaultConfig:cfg => { chk(); if (cfg && typeof cfg === 'object'){ cfg.bitRate = 1000000; cfg.maxMbNum = 16; } },
+    FLEXCAN_Init:() => { chk(); CAN.started = true; }, FLEXCAN_Deinit:() => { CAN.started = false; },
+    FLEXCAN_SetTxMbConfig:() => chk(), FLEXCAN_SetRxMbConfig:(b, mb, cfg) => { chk(); CAN.objs[mb] = { id:((Number(cfg?.id) || 0) >>> 18) & 0x7FF }; },
+    FLEXCAN_ID_STD:id => ((Number(id) || 0) & 0x7FF) << 18,
+    FLEXCAN_TransferSendBlocking:(b, mb, f) => { chk(); if (!f) return 1; canSend((Number(f.id) >>> 18) & 0x7FF, flexData(f).slice(0, Math.min(8, Number(f.length) || 0))); return 0; },
+    FLEXCAN_WriteTxMb:(b, mb, f) => { chk(); if (f) canSend((Number(f.id) >>> 18) & 0x7FF, flexData(f).slice(0, Math.min(8, Number(f.length) || 0))); return 0; },
+    FLEXCAN_GetMbStatusFlags:(b, mask) => { chk(); if (!canPending()) return 0; const mb = Object.keys(CAN.objs)[0]; return mb !== undefined ? ((Number(mask) >>> 0) & (2 ** mb)) : 0; },
+    FLEXCAN_ClearMbStatusFlags:() => chk(),
+    FLEXCAN_ReadRxMb:(b, mb, f) => { chk(); const fr = canRecv(); if (!fr || !f) return 1; f.id = fr.id << 18; f.length = fr.data.length; f.format = 0; f.type = 0; for (let k = 0; k < 8; k++) f['dataByte' + k] = fr.data[k] ?? 0; return 0; },
+    kFLEXCAN_FrameFormatStandard:0, kFLEXCAN_FrameFormatExtend:1, kFLEXCAN_FrameTypeData:0, kFLEXCAN_FrameTypeRemote:1,
+    CAN0:{ name:'CAN0' }, CAN1:{ name:'CAN1' }, CAN2:{ name:'CAN2' }, CAN3:{ name:'CAN3' },
+  });
   // 範例程式會呼叫的初始化與設定函式（模擬器中不需要動作）
   for (const f of NOOPS) if (!(f in api)) api[f] = () => { chk(); return 0; };
   return api;
@@ -175,7 +242,10 @@ const NOOPS = ['SYSCFG_DL_init', 'WDT_A_hold', 'PMM_unlockLPM5', 'GPIO_setAsOutp
   'GPIOPinConfigure', 'GPIOPinTypeI2CSCL', 'GPIOPinTypeI2C', 'GPIOPinTypeADC', 'I2CMasterInitExpClk', 'ADCSequenceConfigure', 'ADCSequenceStepConfigure', 'ADCSequenceEnable', 'ADCIntClear', 'UARTStdioConfig',
   'Device_init', 'Device_initGPIO', 'Interrupt_initModule', 'Interrupt_initVectorTable', 'GPIO_setPadConfig', 'GPIO_setDirectionMode', 'GPIO_setPinConfig', 'GPIO_setQualificationMode', 'I2C_initController', 'I2C_enableModule',
   'ADC_setupSOC', 'ADC_setInterruptSource', 'ADC_enableInterrupt', 'ADC_clearInterruptStatus', 'BOARD_InitBootPins', 'BOARD_InitBootClocks', 'BOARD_InitDebugConsole', 'BOARD_InitPins', 'GPIO_PortInit', 'GPIO_PinInit',
-  'ADC16_SetChannelConfig', 'LPADC_DoSoftwareTrigger', 'ADC_DoSoftwareTriggerConvSeqA', 'ADC_SetChannelConfig', 'DL_ADC12_enableConversions', 'CLOCK_EnableClock', 'PORT_SetPinMux', 'IOMUXC_SetPinMux'];
+  'ADC16_SetChannelConfig', 'LPADC_DoSoftwareTrigger', 'ADC_DoSoftwareTriggerConvSeqA', 'ADC_SetChannelConfig', 'DL_ADC12_enableConversions', 'CLOCK_EnableClock', 'PORT_SetPinMux', 'IOMUXC_SetPinMux',
+  'GPIO_setAsPeripheralModuleFunctionOutputPin', 'EUSCI_A_SPI_initMaster', 'EUSCI_A_SPI_enable', 'EUSCI_B_SPI_initMaster', 'EUSCI_B_SPI_enable', 'USCI_A_SPI_initMaster', 'USCI_A_SPI_enable', 'USCI_B_SPI_initMaster', 'USCI_B_SPI_enable',
+  'GPIOPinTypeSSI', 'SSIConfigSetExpClk', 'SSIEnable', 'GPIOPinTypeCAN', 'SPI_disableModule', 'SPI_enableModule', 'SPI_setConfig', 'SPI_disableFIFO', 'SPI_disableLoopback',
+  'DSPI_MasterGetDefaultConfig', 'DSPI_MasterInit', 'LPSPI_MasterGetDefaultConfig', 'LPSPI_MasterInit', 'SPI_MasterGetDefaultConfig', 'SPI_MasterInit'];
 
 /** 這些前綴的函式若模擬器沒有實作，編譯時給警告，執行時略過並回傳 0 */
-export const VENDOR_PREFIX = /^(DL_|SYSCFG_|GPIO_|WDT_|PMM_|CS_|EUSCI_|USCI_|ADC|SysCtl|GPIOPin|IntMaster|I2C|UART|Device_|Interrupt_|SCI_|CLOCK_|BOARD_|PORT_|IOMUXC_|LPI2C_|LPADC_|SDK_|SysTick|NVIC_|Board_|Timer|PWM|SPI_|FLEXCOMM|POWER_|RESET_|CTIMER_|INPUTMUX_|SYSCON_|LPUART_|USART_|EPWM_|CPUTimer_|XBAR_|DMA_|ECAP_|EQEP_|CMPSS_|DAC_)/;
+export const VENDOR_PREFIX = /^(DL_|SYSCFG_|SSI|CAN|FLEXCAN_|DSPI_|LPSPI_|MCAN_|GPIO_|WDT_|PMM_|CS_|EUSCI_|USCI_|ADC|SysCtl|GPIOPin|IntMaster|I2C|UART|Device_|Interrupt_|SCI_|CLOCK_|BOARD_|PORT_|IOMUXC_|LPI2C_|LPADC_|SDK_|SysTick|NVIC_|Board_|Timer|PWM|SPI_|FLEXCOMM|POWER_|RESET_|CTIMER_|INPUTMUX_|SYSCON_|LPUART_|USART_|EPWM_|CPUTimer_|XBAR_|DMA_|ECAP_|EQEP_|CMPSS_|DAC_)/;

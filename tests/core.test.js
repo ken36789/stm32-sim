@@ -11,6 +11,10 @@ import { cfmt } from '../src/core/printf.js';
 import { startProgram, stopProgram } from '../src/core/runtime.js';
 import { suggestWiring, exampleCode } from '../src/core/codegen.js';
 import { bmxCompensate, crc8 } from '../src/core/devices.js';
+import { setTrace, traceI2C, traceUART, traceSPI, traceCAN, snapshot, tNow, TRACE, utf8 } from '../src/core/trace.js';
+import { decodeI2C, decodeUART, decodeSPI, decodeCAN, sampleSig, canFrameBits, crc15 } from '../src/core/protocols.js';
+import { capture, analyze } from '../src/core/analyzer.js';
+import { nodeOfCan } from '../src/core/buses.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const problems = res => res.filter(r => r.sev === 'err' || r.sev === 'warn').map(r => `${r.sev}: ${r.title}`);
@@ -57,7 +61,7 @@ test('全部 116 種晶片：建議接線 + 範例程式可以編譯（無警告
 });
 
 test('所有模組同時接上（8 個）也能自動接線並通過檢測', () => {
-  const all = TYPE_ORDER.map(t => ({ type:t, variant:t === 'pir' ? 'pir-am312' : t === 'relay' ? 'relay-3v' : undefined }));
+  const all = TYPE_ORDER.slice(0, 8).map(t => ({ type:t, variant:t === 'pir' ? 'pir-am312' : t === 'relay' ? 'relay-3v' : undefined }));
   for (const id of ['nucleo-f401re', 'nucleo-l432kc', 'bluepill-f103c8', 'stm32f407g-disc1', 'nucleo-h743zi2']){
     setup(id, all);
     assert.equal(bench.modules.length, 8);
@@ -129,11 +133,11 @@ test('printf 格式化', () => {
 
 test('編譯錯誤：缺少分號、不存在的腳位、不支援的函式', () => {
   setup('nucleo-f401re');
-  const src = exampleCode().replace('HAL_Delay(10);', 'HAL_Delay(10)').replace('GPIO_PIN_5', 'GPIO_PIN_16') + '\nvoid f(void){ HAL_SPI_Transmit(0); }\n';
+  const src = exampleCode().replace('HAL_Delay(10);', 'HAL_Delay(10)').replace('GPIO_PIN_5', 'GPIO_PIN_16') + '\nvoid f(void){ HAL_RTC_GetTime(0); }\n';
   const msgs = compile(src).diag.map(d => d.msg).join('\n');
   assert.match(msgs, /expected ';' before '}'/);
   assert.match(msgs, /'GPIO_PIN_16' undeclared/);
-  assert.match(msgs, /implicit declaration of function 'HAL_SPI_Transmit'/);
+  assert.match(msgs, /implicit declaration of function 'HAL_RTC_GetTime'/);
 });
 
 test('每一種 SDK 的範例程式都能執行：GPIO、按鈕→蜂鳴器、I2C 感測器、ADC', async () => {
@@ -167,4 +171,106 @@ test('不支援的 SDK 設定函式只會警告並略過，不會讓編譯失敗
   const c = compile(exampleCode().replace('SYSCFG_DL_init();', 'SYSCFG_DL_init();\n  DL_TimerG_startCounter(TIMER_0_INST);'));
   assert.equal(c.ok, true);
   assert.match(c.diag.map(d => d.msg).join(), /DL_TimerG_startCounter.*略過/);
+});
+
+/* ---------- 通訊協定與邏輯分析儀 ---------- */
+const S = (k, t0, idle = 1) => snapshot(k, t0 - 20, TRACE.cursor + 200, idle);
+const packets = r => r.anns.filter(a => /packets$/.test(a.row)).map(a => a.label);
+
+test('協定波形可以正確解碼：I2C（含 NACK）、UART（UTF-8）、SPI、CAN', () => {
+  setTrace(true); TRACE.lines.clear(); const t0 = tNow();
+  traceI2C('SCL', 'SDA', [{ addr:0x76, read:false, bytes:[0xD0] }, { addr:0x76, read:true, bytes:[0x58] }]);
+  traceI2C('SCL', 'SDA', [{ addr:0x48, read:false, bytes:[], nak:true }]);
+  traceUART('TX', utf8('溫度 OK\r\n'));
+  traceSPI({ sck:'SCK', mosi:'MOSI', miso:'MISO' }, [0x9F, 0, 0, 0], [0xFF, 0xEF, 0x40, 0x16]);
+  traceCAN({ bus:'BUS' }, 0x123, [0x00, 0x05, 0x00, 0xFF], { from:'mcu', ack:true });
+  traceCAN({ bus:'BUS' }, 0x200, [0x00, 0x07], { from:'node', ack:false });
+  assert.deepEqual(packets(decodeI2C(S('SCL', t0), S('SDA', t0))), ['寫 0x76：D0 → 讀 0x76：58', '寫 0x48（NACK）']);
+  const u = decodeUART(S('TX', t0), { baud:115200 });
+  assert.equal(u.anns.find(a => a.kind === 'utext').d.text, '溫度 OK\r\n');
+  assert.equal(u.stats.stdBaud, 115200);
+  assert.ok(decodeUART(S('TX', t0), { baud:9600 }).anns.filter(a => a.kind === 'ubyte').length < 3, '鮑率設錯時應該解不出正確內容');
+  const sp = decodeSPI(S('SCK', t0, 0), S('MOSI', t0, 0), S('MISO', t0), null, {});
+  assert.deepEqual(sp.anns.filter(a => a.row === 'miso').map(a => a.d.value), [0xFF, 0xEF, 0x40, 0x16]);
+  assert.notDeepEqual(decodeSPI(S('SCK', t0, 0), S('MOSI', t0, 0), S('MISO', t0), null, { cpha:1 }).anns.filter(a => a.row === 'mosi').map(a => a.d.value), [0x9F, 0, 0, 0]);
+  const c = decodeCAN(S('BUS', t0), { bitrate:500e3 });
+  assert.deepEqual(packets(c), ['ID 0x123 · 4 位元組 · 00 05 00 FF', 'ID 0x200 · 2 位元組 · 00 07 · 沒有 ACK']);
+  assert.equal(c.anns.filter(a => a.kind === 'cerrflag').length, 1);
+  assert.ok(c.anns.some(a => a.kind === 'cstuff'), '0x00／0xFF 應該產生填充位元');
+  // 取樣率太低：100 kHz 的 I2C 用 150 kS/s 取樣就解不出來
+  assert.ok(!packets(decodeI2C(sampleSig(S('SCL', t0), 150e3, t0), sampleSig(S('SDA', t0), 150e3, t0))).includes('寫 0x76：D0 → 讀 0x76：58'));
+  assert.deepEqual(packets(decodeI2C(sampleSig(S('SCL', t0), 4e6, t0), sampleSig(S('SDA', t0), 4e6, t0))), ['寫 0x76：D0 → 讀 0x76：58', '寫 0x48（NACK）']);
+});
+
+test('CAN 訊框：CRC-15 與位元填充，隨機 ID 與資料都能來回編解碼', () => {
+  assert.equal(crc15([]), 0);
+  const f = canFrameBits(0x7FF, [0xFF]);
+  assert.ok(f.filter(x => x.stuff).length >= 3);
+  setTrace(true);
+  let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF) / 0x7FFFFFFF;
+  for (let i = 0; i < 300; i++){
+    TRACE.lines.clear(); const t0 = tNow();
+    const id = Math.floor(rnd() * 0x800), data = Array.from({ length:Math.floor(rnd() * 9) }, () => rnd() < .3 ? 0 : rnd() < .4 ? 0xFF : Math.floor(rnd() * 256));
+    traceCAN({ bus:'B' }, id, data, { from:'mcu', ack:true });
+    const p = decodeCAN(S('B', t0), {}).anns.find(a => a.row === 'packets');
+    assert.ok(p && p.d.id === id && p.d.data.join() === data.join() && p.d.crcOk && p.d.ackOk, `ID 0x${id.toString(16)} ${data}`);
+  }
+});
+
+const SPICAN = [{ type:'tc', variant:'max31855' }, { type:'flash' }, { type:'can' }];
+test('有 SPI 的晶片都能接熱電偶與 SPI Flash；有 CAN 的晶片都能接收發器，範例程式可編譯、檢測沒有錯誤', () => {
+  let spi = 0, can = 0;
+  for (const b of BOARDS){
+    setup(b.id, SPICAN.filter(m => m.type !== 'can' || b.can).filter(m => m.type === 'can' || b.spi));
+    const c = compile(exampleCode());
+    assert.equal(c.ok, true, b.id); assert.deepEqual(c.diag, [], b.id);
+    assert.deepEqual(problems(runChecks(exampleCode())), [], b.id);
+    if (b.spi) spi++; if (b.can) can++;
+  }
+  assert.ok(spi >= 110 && can >= 50, `SPI ${spi}、CAN ${can}`);
+  setup('nucleo-f401re', [{ type:'can' }]);
+  assert.ok(problems(runChecks(exampleCode())).some(p => /不能做 CAN 實驗/.test(p)), '沒有 CAN 的晶片要報錯');
+});
+
+test('每一種 SDK 都能用 SPI 讀熱電偶、讀寫 Flash，並收發 CAN', async () => {
+  const cases = { 'nucleo-f446re':'bxCAN', 'nucleo-g474re':'FDCAN', mspm0g3507:'MCAN', msp430fr2355:'MSP430', tm4c123gh6pm:'TivaWare', tms320f28379d:'C2000', mk64fn1m0vll12:'FlexCAN', lpc55s69jbd100:'LPC55', mimxrt1062dvl6b:'i.MX RT' };
+  for (const [id, label] of Object.entries(cases)){
+    const b = BOARDS.find(x => x.id === id);
+    setup(id, [{ type:'tc', variant:'max6675' }, { type:'flash' }, ...(b.can ? [{ type:'can' }] : [])]);
+    const out = await run([/MCU-Lab!/, /熱電偶 溫度 = /, ...(b.can ? [/CAN 收到 ID 0x200/, /CAN 送出/] : [])]);
+    assert.match(out, /JEDEC ID = EF 40 16/, `${label}：${out}`);
+    assert.match(out, /4D 43 55 2D 4C 61 62 21（MCU-Lab!）/, `${label}：Flash 讀寫`);
+    assert.match(out, /熱電偶 溫度 = 2\d\.\d\d/, `${label}：熱電偶`);
+    if (b.can){
+      assert.match(out, /CAN 收到 ID 0x200/, `${label}：CAN 接收`);
+      assert.ok(nodeOfCan(bench.modules[2]).rx.some(f => f.id === 0x123), `${label}：測試節點沒有收到 MCU 的訊框`);
+    }
+  }
+});
+
+test('四種分析儀接上後都能解碼，接錯、沒共地、節點關閉時會說明原因', async () => {
+  const mods = [{ type:'temp', variant:'bme280' }, { type:'tc' }, { type:'flash' }, { type:'can' }, { type:'la_i2c' }, { type:'la_uart' }, { type:'la_spi' }, { type:'la_can' }];
+  setup('nucleo-f446re', mods);
+  assert.deepEqual(problems(runChecks(exampleCode())), []);
+  const t0 = tNow();
+  await run([/MCU-Lab!/, /CAN 收到/]);
+  const opt = { rate:24e6, baud:115200, cpol:0, cpha:0, bitrate:500e3 };
+  const la = t => bench.modules.find(m => m.type === t), res = t => analyze(capture(la(t), t0, tNow()), opt);
+  for (const t of ['la_i2c', 'la_uart', 'la_spi', 'la_can']){
+    const r = res(t);
+    assert.ok(r.anns.some(a => /packets$/.test(a.row)), `${t} 沒有解出資料`);
+    assert.deepEqual(r.issues.filter(i => i.sev === 'warn' || i.sev === 'err').map(i => i.title), [], t);
+  }
+  // 解碼設定錯誤
+  assert.ok(analyze(capture(la('la_uart'), t0, tNow()), { ...opt, baud:9600 }).issues.some(i => /框架錯誤|鮑率/.test(i.title)));
+  assert.ok(analyze(capture(la('la_i2c'), t0, tNow()), { ...opt, rate:100e3 }).issues.some(i => /取樣率/.test(i.title)));
+  // 拔掉分析儀的 GND
+  const { wires, removeWire } = await import('../src/core/sim.js');
+  removeWire(wires.find(w => w.a === `${la('la_i2c').id}.GND` || w.b === `${la('la_i2c').id}.GND`), true); refreshNet();
+  assert.ok(problems(runChecks(exampleCode())).some(p => /GND 沒有接/.test(p)));
+  assert.ok(res('la_i2c').issues.some(i => /共地/.test(i.title)));
+  // 關閉 CAN 測試節點：MCU 的訊框沒有 ACK
+  nodeOfCan(la('can') || bench.modules.find(m => m.type === 'can')).on = false;
+  const t1 = tNow(); await run([/CAN 送出/]);
+  assert.ok(analyze(capture(la('la_can'), t1, tNow()), opt).anns.some(a => a.kind === 'cframenack'));
 });
