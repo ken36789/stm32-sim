@@ -3,6 +3,7 @@
 import { SIM, readPin, i2cFind, adcRead, bench } from './sim.js';
 import { cfmt } from './printf.js';
 import { hooks } from './hooks.js';
+import { vendorAPI, VENDOR_PREFIX } from './hal-vendor.js';
 
 export const STOP = { stop:true };
 const HAL_OK = 0, HAL_ERROR = 1;
@@ -70,8 +71,20 @@ export function makeAPI(r){
   };
   'ABCDEFGHIJK'.split('').forEach(p => api['GPIO' + p] = { port:p });
   for (let b = 0; b < 16; b++) api['GPIO_PIN_' + b] = 1 << b;
+  Object.assign(api, vendorAPI({ chk, sleep, outputs:() => hooks.outputs(), print:(f, a) => { chk(); const s = cfmt(f, a); hooks.serial(s); return s.length; } }));
+  // 未實作的 SDK 函式與巨集：函式略過並回傳 0，全大寫或 k 開頭的常數視為 0（透過 with 區塊查找）
+  const known = new Set(Object.keys(api));
+  const stub = () => 0;
+  api.__env = new Proxy({}, {
+    has:(t, k) => typeof k === 'string' && !known.has(k) && (VENDOR_PREFIX.test(k) || /^[A-Z][A-Z0-9_]*$/.test(k) || /^k[A-Z]\w*$/.test(k)),
+    get:(t, k) => typeof k === 'string' && VENDOR_PREFIX.test(k) && !/^[A-Z][A-Z0-9_]*$/.test(k) ? stub : 0,
+    set:() => true,
+  });
   return api;
 }
 export const API_NAMES = Object.keys(makeAPI({ stop:false, t0:0 }));
-export const BUILTIN_FNS = new Set(API_NAMES.filter(k => /^(HAL_|MX_|System|Error|printf|puts|sprintf|strlen|abs|fabs|sqrt)/.test(k) && !/^HAL_(OK|ERROR|BUSY|TIMEOUT|MAX_DELAY)$/.test(k)));
+const SAMPLE_API = makeAPI({ stop:false, t0:0 });
+const INTERNAL = new Set(['__y', '__arr', '__u8', '__i8', '__u16', '__i16', '__u32', '__i32', '__env']);
+export const BUILTIN_FNS = new Set(API_NAMES.filter(k => typeof SAMPLE_API[k] === 'function' && !INTERNAL.has(k)));
+export { VENDOR_PREFIX };
 export const currentBoard = () => bench.board;

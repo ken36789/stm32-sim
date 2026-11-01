@@ -4,22 +4,52 @@ import { bench, wires, NET, SIM, net, netInfo, shorts, nodeOf, isGpioName, modul
 import { stripCode } from './compiler.js';
 import { hooks } from './hooks.js';
 
+/** 找出程式實際輸出、讀取的 GPIO（支援 STM32 HAL、MSPM0、MSP430、TivaWare、C2000、MCUXpresso 的寫法） */
 export function analyzeCode(src){
-  const code = stripCode(src, false), outs = new Set(), ins = new Set(); let m;
-  const macros = {};
-  for (const d of code.matchAll(/^\s*#\s*define\s+(\w+)\s+(GPIO[A-K]|GPIO_PIN_\d+)\s*$/gm)) macros[d[1]] = d[2];
-  const expand = s => s.replace(/\b\w+\b/g, w => macros[w] || w);
-  const masks = (port, expr) => (expr.match(/GPIO_PIN_(\d+)/g) || []).map(x => 'P' + port + x.slice(9));
-  const reW = /HAL_GPIO_(?:WritePin|TogglePin)\s*\(([^,]+),([^,)]+)/g;
-  while ((m = reW.exec(code))){ const port = expand(m[1]).match(/GPIO([A-K])/); if (port) masks(port[1], expand(m[2])).forEach(p => outs.add(p)); }
-  const reR = /HAL_GPIO_ReadPin\s*\(([^,]+),([^)]+)\)/g;
-  while ((m = reR.exec(code))){ const port = expand(m[1]).match(/GPIO([A-K])/); if (port) masks(port[1], expand(m[2])).forEach(p => ins.add(p)); }
-  return { outs, ins, i2c:/\bhi2c1\b/.test(code), adc:/HAL_ADC_GetValue/.test(code) };
+  const code = stripCode(src, false), b = bench.board, outs = new Set(), ins = new Set(), macros = {};
+  for (const d of code.matchAll(/^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+([^\n]+?)[ \t]*$/gm)) macros[d[1]] = d[2];
+  const expand = s => { let t = s; for (let k = 0; k < 3; k++) t = t.replace(/\b[A-Za-z_]\w*\b/g, w => macros[w] ?? w); return t; };
+  const num = s => (String(s).match(/(\d+)\s*[uUlL]*\s*\)*\s*$/) || [])[1];
+  const each = (re, fn) => {
+    for (const m of code.matchAll(re)){
+      let i = m.index + m[0].length, depth = 1, j = i;
+      for (; j < code.length && depth; j++){ if (code[j] === '(') depth++; else if (code[j] === ')') depth--; }
+      const args = [], body = code.slice(i, j - 1); let cur = '', dp = 0;
+      for (const ch of body){ if (ch === ',' && !dp){ args.push(cur); cur = ''; continue; } if (ch === '(') dp++; if (ch === ')') dp--; cur += ch; }
+      args.push(cur); fn(m[1], args.map(a => expand(a.trim())));
+    }
+  };
+  const masks = s => [...s.matchAll(/(?:DL_GPIO_PIN_|GPIO_PIN_|GPIO_PIN)(\d+)/g)].map(m => m[1]);
+  const nxp = (base, a, c) => {
+    if (/^\(?GPIO\)?$/.test(base)) return `PIO${num(a)}_${num(c)}`;
+    const k = base.match(/GPIO([A-E])\b/); if (k) return `PT${k[1]}${num(a)}`;
+    const g = base.match(/GPIO(\d+)/); if (!g) return null;
+    return b.pinStyle === 'imxrt' ? `GPIO${g[1]}_IO${String(num(a)).padStart(2, '0')}` : `P${g[1]}_${num(a)}`;
+  };
+  const add = (set, p) => { if (p && !/undefined|null/.test(p)) set.add(p); };
+  each(/\b(HAL_GPIO_(?:WritePin|TogglePin|ReadPin)|DL_GPIO_(?:setPins|clearPins|togglePins|readPins)|GPIOPin(?:Write|Read))\s*\(/g, (f, a) => {
+    const port = (a[0].match(/GPIO_?PORT([A-Q])_BASE|GPIO([A-K])\b/) || []).slice(1).find(Boolean); if (!port) return;
+    masks(a[1] || '').forEach(n => add(/Read/i.test(f) ? ins : outs, `P${port}${n}`));
+  });
+  each(/\b(GPIO_(?:setOutputHighOnPin|setOutputLowOnPin|toggleOutputOnPin|getInputPinValue))\s*\(/g, (f, a) => {
+    const port = (a[0].match(/GPIO_PORT_P(\w+)/) || [])[1]; if (!port) return;
+    masks(a[1] || '').forEach(n => add(f.includes('Input') ? ins : outs, `P${port}.${n}`));
+  });
+  each(/\b(GPIO_(?:writePin|togglePin|readPin))\s*\(/g, (f, a) => add(f.includes('read') ? ins : outs, `GPIO${num(a[0])}`));
+  each(/\b(GPIO_(?:PinWrite|PinRead|PortToggle|PortSet|PortClear))\s*\(/g, (f, a) => {
+    const lpc = /^\(?GPIO\)?$/.test(a[0]), set = f === 'GPIO_PinRead' ? ins : outs;
+    if (f === 'GPIO_PinWrite' || f === 'GPIO_PinRead') add(set, lpc ? nxp(a[0], a[1], a[2]) : nxp(a[0], a[1]));
+    else { const sh = (lpc ? a[2] : a[1] || '').match(/<<\s*\(?\s*(\d+)/); if (sh) add(set, lpc ? nxp(a[0], a[1], sh[1]) : nxp(a[0], sh[1])); }
+  });
+  return { outs, ins,
+    i2c:/HAL_I2C_|DL_I2C_|_I2C_master|I2CMaster|I2C_sendStartCondition|I2C_MasterStart|LPI2C_Master/.test(code),
+    adc:/HAL_ADC_GetValue|DL_ADC12_getMemResult|ADC\w*_getResults|ADCSequenceDataGet|ADC_readResult|ADC16_GetChannelConversionValue|LPADC_GetConvResult|ADC_GetChannelConversion/.test(code) };
 }
 
 const railV = node => { const i = netInfo(node); return i.v5 ? 5 : i.v33 ? 3.3 : 0; };
 const list = s => [...s].join('、') || '（沒有）';
 const pinName = mcu => { const h = bench.board.header.find(x => x.mcu === mcu); return h && h.label !== mcu ? `${h.label}（${mcu}）` : mcu; };
+const callHint = (p, dir) => ({ out:'用 GPIO 輸出函式控制它', in:'用 GPIO 讀取函式讀它' })[dir] + `（${p}）`;
 
 export function runChecks(src){
   const out = [], add = (sev, title, detail, pins = [], action) => out.push({ sev, title, detail, pins, action });
@@ -68,9 +98,9 @@ export function runChecks(src){
       const p = i.gpio[0], h = bench.board.header.find(x => x.mcu === p);
       if (dir === 'adc' && !(h && h.tags.includes('adc'))){ add('err', `${label} 接到 ${pinName(p)}`, '這支腳沒有 ADC 功能，讀不到類比電壓。改接 A0–A5 等類比輸入腳。', netPins(P(n))); return null; }
       add('ok', `${label} → ${pinName(p)}`, dir === 'out' ? `由 ${p} 控制。` : dir === 'in' ? `用 HAL_GPIO_ReadPin 讀 ${p}。` : `${p} 具備 ADC 功能。`, netPins(P(n)));
-      if (dir === 'out' && !code.outs.has(p)) add('warn', `程式沒有控制 ${p}`, `程式輸出的腳位是 ${list(code.outs)}。用 HAL_GPIO_WritePin(GPIO${p[1]}, GPIO_PIN_${p.slice(2)}, …) 控制它，或按「程式」分頁的「載入範例程式」。`, netPins(P(n)));
-      if (dir === 'in' && !code.ins.has(p)) add('warn', `程式沒有讀取 ${p}`, `程式讀取的腳位是 ${list(code.ins)}。改用 HAL_GPIO_ReadPin(GPIO${p[1]}, GPIO_PIN_${p.slice(2)})。`, netPins(P(n)));
-      if (dir === 'adc' && !code.adc) add('warn', '程式沒有讀取 ADC', '用 HAL_ADC_Start、HAL_ADC_PollForConversion、HAL_ADC_GetValue 讀取類比值。', netPins(P(n)));
+      if (dir === 'out' && !code.outs.has(p)) add('warn', `程式沒有控制 ${p}`, `程式輸出的腳位是 ${list(code.outs)}。${callHint(p, 'out')}，或按「程式」分頁的「載入範例程式」。`, netPins(P(n)));
+      if (dir === 'in' && !code.ins.has(p)) add('warn', `程式沒有讀取 ${p}`, `程式讀取的腳位是 ${list(code.ins)}。${callHint(p, 'in')}，或按「載入範例程式」。`, netPins(P(n)));
+      if (dir === 'adc' && !code.adc) add('warn', '程式沒有讀取 ADC', '程式裡沒有呼叫 ADC 讀值函式。按「載入範例程式」可以看到這塊板子 SDK 的 ADC 讀法。', netPins(P(n)));
       return p;
     };
     switch (m.type){
@@ -95,7 +125,7 @@ export function runChecks(src){
           else add('err', `${moduleLabel(m)} 的 ${n} 沒有接到開發板`, `${n} 要接到 ${pinName(want.mcu)}。`, pinsOr(P(n)));
         }
         if (m.st.damaged) add('err', `${name} 已經損壞`, '先前通電時電壓過高。改好接線後換一顆新的。', [P('VCC')], { label:'更換新的感測器', fn:() => { m.st.damaged = false; m.st.dev = null; hooks.sensorDamaged(m, false); hooks.toast('已換上新的感測器。'); hooks.recheck(); } });
-        if (!code.i2c) add('warn', '程式沒有使用 I2C', `感測器已接好，但程式沒有透過 hi2c1 讀取它。可以按「載入範例程式」取得 ${v.part} 的讀取範例。`);
+        if (!code.i2c) add('warn', '程式沒有使用 I2C', `感測器已接好，但程式沒有呼叫 I2C 函式讀取它。可以按「載入範例程式」取得 ${v.part} 的讀取範例。`);
         break;
       }
     }

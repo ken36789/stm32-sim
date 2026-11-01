@@ -10,7 +10,8 @@ export let PINS = {}, PIN_ORDER = [], NET = null;
 export let wires = [];
 let wireSeq = 0, modSeq = 0;
 
-export const isGpioName = s => /^P[A-K]\d+$/.test(s);
+/** 網路節點中，除了電源、地、電源軌與模組腳位以外的都是 MCU 腳位（PA5、P1.0、PTB22、GPIO31、PIO1_4…） */
+export const isGpioName = s => !['3V3', '5V', 'GND', 'RAIL+', 'RAIL-'].includes(s) && !/^M\d+\./.test(s);
 const freshState = () => ({ pressed:false, pot:.42, motionUntil:0, boost:0, damaged:false, dev:null });
 
 /* ---------- 腳位登錄 ---------- */

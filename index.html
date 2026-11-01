@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>STM32 接線實驗台</title>
-<meta name="description" content="在瀏覽器裡用 3D 模擬 37 種 STM32 開發板接線、檢測接線錯誤，並編譯燒錄 C/HAL 程式。">
+<title>MCU 模擬實驗室</title>
+<meta name="description" content="在瀏覽器裡用 3D 模擬 ST、TI、NXP 共 116 種 MCU 的接線、檢測接線錯誤，並編譯燒錄 C/HAL 程式。">
 <meta name="theme-color" content="#e7ecef" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1418" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -18,7 +18,7 @@
     <div class="brand">
       <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="7" y="7" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11 3v4M15 3v4M19 3v4M11 23v4M15 23v4M19 23v4M3 11h4M3 15h4M3 19h4M23 11h4M23 15h4M23 19h4" stroke="currentColor" stroke-width="1.6"/><circle cx="11" cy="11" r="1.4" fill="currentColor"/></svg>
       <div>
-        <h1>STM32 接線實驗台</h1>
+        <h1>MCU 模擬實驗室</h1>
         <p class="sub" id="boardSub">NUCLEO-H743ZI2 · STM32H743ZIT6</p>
       </div>
     </div>
@@ -44,6 +44,11 @@
   </section>
 
   <aside class="panel">
+    <div class="flow" id="flow" aria-label="實驗流程">
+      <button type="button" class="step" data-step="check"><b>1</b><span>接線檢測</span><i></i></button>
+      <button type="button" class="step" data-step="build"><b>2</b><span>編譯</span><i></i></button>
+      <button type="button" class="step" data-step="flash"><b>3</b><span>燒錄</span><i></i></button>
+    </div>
     <div class="tabs" role="tablist" aria-label="功能">
       <button role="tab" id="t-wire" aria-controls="tab-wire" aria-selected="true">接線</button>
       <button role="tab" id="t-parts" aria-controls="tab-parts" aria-selected="false" tabindex="-1">元件</button>
@@ -95,17 +100,17 @@
         <button class="btn primary" id="btnCheck" type="button">執行接線檢測</button>
         <div class="summary" id="sum"></div>
       </div>
-      <p class="note" style="margin:0">檢查短路、電源電壓、I2C 腳位、腳位是否接反，並對照程式實際控制的 GPIO。點任一項目會在 3D 畫面標出相關腳位。</p>
+      <p class="note" style="margin:0">每次更換晶片、模組或接線後都要重新檢測，沒有錯誤才能燒錄。檢查短路、電源電壓、I2C 腳位、腳位是否接反，並對照程式實際控制的 GPIO。點任一項目會在 3D 畫面標出相關腳位。</p>
       <ul class="results" id="results"></ul>
     </div>
 
     <div class="tabpanel fill" id="tab-code" role="tabpanel" aria-labelledby="t-code" hidden>
       <div class="code-tools">
-        <span class="file">Core/Src/main.c</span>
+        <span class="file">main.c</span>
         <div class="btns">
           <button class="btn sm" id="btnExample" type="button">載入範例程式</button>
           <button class="btn sm" id="btnBuild" type="button">編譯</button>
-          <button class="btn sm primary" id="btnFlash" type="button">編譯並燒錄</button>
+          <button class="btn sm primary" id="btnFlash" type="button">燒錄</button>
           <button class="btn sm" id="btnReset" type="button">重設</button>
           <button class="btn sm" id="btnStop" type="button">停止</button>
         </div>
@@ -122,14 +127,15 @@
         <pre class="log" id="log"></pre>
       </div>
       <details class="api">
-        <summary>模擬器支援的 HAL 函式</summary>
+        <summary>模擬器支援的 SDK 函式</summary>
         <ul>
-          <li><code>HAL_GPIO_WritePin / TogglePin / ReadPin</code>：GPIOA–K，GPIO_PIN_0–15，可用 | 合併</li>
-          <li><code>HAL_Delay(ms)</code>、<code>HAL_GetTick()</code></li>
-          <li><code>HAL_I2C_Mem_Read / Mem_Write / Master_Transmit / Master_Receive / IsDeviceReady</code>（hi2c1）</li>
-          <li><code>HAL_ADC_Start / PollForConversion / GetValue</code>（hadc1，讀取接在 ADC 腳上的類比模組）</li>
-          <li><code>printf</code>、<code>sprintf</code>、<code>HAL_UART_Transmit</code> → 序列埠</li>
-          <li>各開發板的板載 LED、按鈕與 I2C 腳位請看「元件」分頁；按「載入範例程式」會依目前的開發板與模組產生完整範例</li>
+          <li><b>ST · STM32Cube HAL</b>：<code>HAL_GPIO_*</code>、<code>HAL_Delay</code>、<code>HAL_I2C_*</code>、<code>HAL_ADC_*</code>、<code>printf</code></li>
+          <li><b>TI · MSPM0 DriverLib</b>：<code>DL_GPIO_*</code>、<code>delay_cycles</code>、<code>DL_I2C_*Controller*</code>、<code>DL_ADC12_*</code></li>
+          <li><b>TI · MSP430 DriverLib</b>：<code>GPIO_setOutput*OnPin</code>、<code>__delay_cycles</code>、<code>EUSCI_B_I2C_*</code>／<code>USCI_B_I2C_*</code>、<code>ADC*_getResults</code></li>
+          <li><b>TI · TivaWare</b>：<code>GPIOPinWrite／Read</code>、<code>SysCtlDelay</code>、<code>I2CMaster*</code>、<code>ADCSequenceDataGet</code>、<code>UARTprintf</code></li>
+          <li><b>TI · C2000Ware</b>：<code>GPIO_writePin／togglePin／readPin</code>、<code>DEVICE_DELAY_US</code>、<code>I2C_*</code>、<code>ADC_readResult</code></li>
+          <li><b>NXP · MCUXpresso SDK</b>：<code>GPIO_PinWrite／PinRead／PortToggle</code>、<code>SDK_DelayAtLeastUs</code>、<code>I2C_Master*</code>／<code>LPI2C_Master*</code>、<code>ADC16／LPADC／ADC</code>、<code>PRINTF</code></li>
+          <li>其他同前綴的設定函式（例如時脈、腳位多工）會在編譯時提示「略過」，不影響執行。按「載入範例程式」可以看到目前晶片的完整寫法。</li>
         </ul>
       </details>
     </div>

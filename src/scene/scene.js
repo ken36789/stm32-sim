@@ -117,11 +117,16 @@ export function buildBench(){
   R.scene.updateMatrixWorld(true);
 }
 
-const PKG = { LQFP144:[20, 36], LQFP100:[14, 25], LQFP64:[10, 16], LQFP48:[7, 12], UFQFPN48:[7, 0], LQFP32:[5.5, 8], UFQFPN32:[5, 0] };
+/** 依封裝推算晶片大小與每邊接腳數（QFP 四邊有腳；SSOP 兩邊；QFN、BGA 沒有外露接腳） */
+function pkgShape(pkg){
+  const n = +(pkg.match(/\d+/) || [48])[0], qfp = /QFP/.test(pkg) && !/QFN/.test(pkg), ssop = /SSOP|TSSOP|SOP/.test(pkg);
+  const size = n >= 176 ? 24 : n >= 128 ? 20 : n >= 100 ? 14 : n >= 64 ? 10 : n >= 44 ? 7 : n >= 30 ? 5.5 : 5;
+  return [ssop ? size * .8 : size, qfp ? Math.min(44, Math.round(n / 4)) : 0, ssop ? Math.round(n / 2) : 0];
+}
 function boardLayout(b){
-  const F = FORMS[b.form], W = F.w, D = F.d, x0 = -W, z0 = -D / 2, wide = W >= 70;
+  const F = FORMS[b.form], W = F.w, D = Math.max(F.d, b.header.length / 2 * 5 + 26), x0 = -W, z0 = -D / 2, wide = W >= 70, [size, legs, sides] = pkgShape(b.pkg);
   return { F, W, D, x0, z0, wide, rows:b.header.length / 2,
-    mcu:{ x:(x0 - 17) / 2, z: F.stlink ? (wide ? 8 : 6) : -6, size:PKG[b.pkg][0], legs:PKG[b.pkg][1] },
+    mcu:{ x:(x0 - 17) / 2, z: F.dbg ? (wide ? 8 : 6) : -6, size, legs, sides },
     usb:{ x:x0 + 12, z:z0 + 3.5 }, stlink:{ x: wide ? x0 + 28 : x0 + 12, z: wide ? z0 + 12 : z0 + 15 },
     pwr:{ x: wide ? x0 + 40 : x0 + 22, z:z0 + 6 }, sep: wide ? z0 + 25 : z0 + 23,
     ledZ:D / 2 - 16, btnZ:D / 2 - 7, ldo:{ x:x0 + 7, z: wide ? z0 + 18 : z0 + 30 } };
@@ -138,7 +143,7 @@ function buildBoard(b){
   box(10, 2.5, L.rows * 5, M(0x16181b, { roughness:.7 }), -11.5, 1.25, 0, g);
   b.header.forEach((h, i) => { const p = headerPos(b, i); addPin(h.id, p.x, PIN_TOP_BOARD, p.z); });
   // MCU 與接腳
-  const { x:mx, z:mz, size, legs } = L.mcu;
+  const { x:mx, z:mz, size, legs, sides } = L.mcu;
   box(size, 1.4, size, M(0x1a1d21), mx, .7, mz, g);
   topPlane(size, size, ctex(512, 512, (c, w, h) => drawChip(c, w, h, b)), mx, 1.41, mz, g);
   if (legs){
@@ -150,10 +155,14 @@ function buildBoard(b){
       o.updateMatrix(); inst.setMatrixAt(k++, o.matrix);
     }
     g.add(inst);
+  } else if (sides){
+    const per = Math.ceil(sides / 2), lg = new THREE.BoxGeometry(.3, .25, 1.4), inst = new THREE.InstancedMesh(lg, M(0xbfc5ca, { metalness:.6, roughness:.3 }), per * 2), o = new THREE.Object3D(); let k = 0;
+    for (let s = 0; s < 2; s++) for (let i = 0; i < per; i++){ o.position.set(mx + (i - (per - 1) / 2) * size * .85 / per, .15, mz + (s ? 1 : -1) * (size / 2 + .55)); o.updateMatrix(); inst.setMatrixAt(k++, o.matrix); }
+    g.add(inst);
   }
   hitBox(size + 2, 3, size + 2, mx, 1.2, mz, { type:'part', key:'mcu' }, g);
   // ST-LINK、USB、電源指示燈
-  if (L.F.stlink){ box(7, 1.2, 7, M(0x1d2024), L.stlink.x, .6, L.stlink.z, g); hitBox(9, 3, 9, L.stlink.x, 1, L.stlink.z, { type:'part', key:'stlink' }, g); }
+  if (L.F.dbg){ box(7, 1.2, 7, M(0x1d2024), L.stlink.x, .6, L.stlink.z, g); hitBox(9, 3, 9, L.stlink.x, 1, L.stlink.z, { type:'part', key:'stlink' }, g); }
   box(5, 1.4, 2.6, M(0x23262a), L.ldo.x, .7, L.ldo.z, g); hitBox(7, 3, 5, L.ldo.x, 1, L.ldo.z, { type:'part', key:'ldo' }, g);
   box(4.6, 1.1, 2, M(0xcfd3d6, { metalness:.55, roughness:.3 }), mx + size / 2 + 6, .55, mz - size / 2 - 2, g);
   box(8, 3.2, 7, M(0xb9bec2, { metalness:.7, roughness:.25 }), L.usb.x, 1.6, L.usb.z, g);
@@ -171,7 +180,7 @@ function buildBoard(b){
     G.leds[key] = { mt, glow, color, on:false, base:0xe8e2d6 };
   };
   led('PWR', L.pwr.x, L.pwr.z, 0xff3b30);
-  if (L.F.stlink) led('COM', L.pwr.x + 4.5, L.pwr.z, 0xff3b30);
+  if (L.F.dbg) led('COM', L.pwr.x + 4.5, L.pwr.z, 0xff3b30);
   b.leds.forEach((l, i) => led(l.name, x0 + 6 + i * 5, L.ledZ, l.hex));
   // 按鈕
   const button = (key, x, color) => {
@@ -187,7 +196,7 @@ function buildBoard(b){
   for (let k = 0; k < Math.round(W * D / 160); k++){
     const x = x0 + 3 + rnd() * (W - 23), z = z0 + 6 + rnd() * (D - 12);
     if (Math.abs(x - mx) < size / 2 + 3 && Math.abs(z - mz) < size / 2 + 3) continue;
-    if (z > L.ledZ - 3 || (z < L.sep && L.F.stlink)) continue;
+    if (z > L.ledZ - 3 || (z < L.sep && L.F.dbg)) continue;
     box(rnd() > .5 ? 1.6 : 1, .5, .8, rnd() > .45 ? capM : resM, x, .25, z, g).rotation.y = rnd() > .5 ? Math.PI / 2 : 0;
   }
 }
@@ -209,7 +218,7 @@ function drawBoard(g, W, H, b, L){
   b.header.forEach((h, i) => { const p = headerPos(b, i); if (i % 2 === 0) txt(h.label, -16.6, p.z, 19, 'right'); else txt(h.label, -6.6, p.z, 19, 'left'); });
   const sz = L.mcu.size + 3; g.lineWidth = 2; g.strokeRect(X(L.mcu.x - sz / 2), Z(L.mcu.z - sz / 2), sz * S, sz * S);
   txt('U1', L.mcu.x - sz / 2, L.mcu.z - sz / 2 - 1.4, 15, 'left');
-  if (F.stlink){
+  if (F.dbg){
     g.setLineDash([10, 8]); g.beginPath(); g.moveTo(X(L.x0 + 2), Z(L.sep)); g.lineTo(X(-18), Z(L.sep)); g.stroke(); g.setLineDash([]);
     txt(b.prog, L.stlink.x, L.stlink.z + 5.8, 14);
     txt('PWR', L.pwr.x, L.pwr.z + 2.4, 12); txt('COM', L.pwr.x + 4.5, L.pwr.z + 2.4, 12);
@@ -226,10 +235,10 @@ function drawChip(g, W, H, b){
   g.fillStyle = '#1a1d21'; g.fillRect(0, 0, W, H);
   const rnd = mulberry32(3); for (let k = 0; k < 900; k++){ g.fillStyle = `rgba(255,255,255,${rnd() * .025})`; g.fillRect(rnd() * W, rnd() * H, 2, 2); }
   g.fillStyle = '#121417'; g.beginPath(); g.arc(56, 56, 22, 0, 7); g.fill();
-  const part = b.mcu.match(/^(STM32[A-Z0-9]{4})(.*)$/);
+  const cut = b.mcu.startsWith('STM32') ? 9 : b.mcu.startsWith('TMS320') ? 6 : Math.min(b.mcu.length, 10), l1 = b.mcu.slice(0, cut), l2 = b.mcu.slice(cut) || b.vendor;
   g.fillStyle = '#c6ccd1'; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.font = '600 66px "JetBrains Mono", monospace'; g.fillText(part[1], W / 2, H / 2 - 52);
-  g.font = '600 56px "JetBrains Mono", monospace'; g.fillText(part[2], W / 2, H / 2 + 16);
+  g.font = `600 ${l1.length > 9 ? 58 : 66}px "JetBrains Mono", monospace`; g.fillText(l1, W / 2, H / 2 - 52);
+  g.font = `600 ${l2.length > 8 ? 46 : 56}px "JetBrains Mono", monospace`; g.fillText(l2, W / 2, H / 2 + 16);
   g.font = '400 32px "JetBrains Mono", monospace'; g.fillStyle = '#9aa2a8'; g.fillText(`${b.core}  ${b.mhz}MHz`, W / 2, H / 2 + 82);
 }
 
@@ -282,7 +291,7 @@ export function disposeWireMesh(w){
 /* ---------- 視角與狀態 ---------- */
 export function fitView(){
   const W = FORMS[bench.board.form].w, a = R.camera.aspect || 1.4;
-  const minX = -W - 6, maxX = 84, width = maxX - minX, depth = 140;
+  const minX = -W - 6, maxX = 84, width = maxX - minX, depth = Math.max(140, bench.board.header.length / 2 * 5 + 40);
   const vf = THREE.MathUtils.degToRad(R.camera.fov), hf = 2 * Math.atan(Math.tan(vf / 2) * a);
   const dist = Math.max(width / 2 / Math.tan(hf / 2), depth / 2 / Math.tan(vf / 2)) * 1.08;
   R.controls.target.set((minX + maxX) / 2, -2, 6);

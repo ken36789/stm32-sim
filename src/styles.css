@@ -234,3 +234,23 @@ button,select,[role="tab"]{touch-action:manipulation;-webkit-tap-highlight-color
 .live:empty{display:none}
 #holdBtn{touch-action:none;user-select:none;-webkit-user-select:none}
 @media (pointer:coarse){ .search{font-size:16px} }
+
+/* 實驗流程：檢測 → 編譯 → 燒錄 */
+.flow{flex:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:8px 10px;background:var(--surface);border-bottom:1px solid var(--line)}
+.step{appearance:none;display:flex;align-items:center;gap:6px;min-width:0;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--code-bg);font:600 12.5px/1.2 var(--f-body);color:var(--muted);cursor:pointer}
+.step b{flex:none;width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--surface-2);color:var(--muted);font:600 11px/1 var(--f-mono)}
+.step span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.step i{margin-left:auto;font-style:normal;font-size:12px;flex:none}
+.step.done{border-color:transparent;background:var(--ok-bg);color:var(--ok)}
+.step.done b{background:var(--ok);color:var(--on-strong)}
+.step.need{border-color:var(--accent);color:var(--fg)}
+.step.need b{background:var(--accent);color:var(--accent-ink)}
+.step.bad{border-color:transparent;background:var(--err-bg);color:var(--err)}
+.step.bad b{background:var(--err);color:var(--on-strong)}
+.flow.pulse .need{animation:pulse .5s ease-in-out 2}
+@keyframes pulse{50%{box-shadow:0 0 0 3px var(--accent-weak)}}
+
+/* iPhone／iPad：長按按鈕或清單時不要跳出選取與拷貝 */
+.top,.panel,.stage{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.panel textarea,.panel input,.panel select,.serial,.log,.specs dd{-webkit-user-select:text;user-select:text}
+.panel textarea,.serial,.log,a.dl{-webkit-touch-callout:default}

@@ -90,6 +90,7 @@ export const DEFAULT_MODULES = [
   { type:'button', variant:'btn-tact' },
   { type:'temp', variant:'bme280' },
   { type:'pot', variant:'pot-rotary' },
+  { type:'buzzer', variant:'buz-3v' },
 ];
 
 /* ---------- 麵包板電源軌 ---------- */

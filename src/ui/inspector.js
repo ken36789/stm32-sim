@@ -1,12 +1,14 @@
 // 「元件」分頁：開發板、板上元件、外接模組的資訊、datasheet、更換型號與互動控制
 import { $, esc } from './dom.js';
-import { BOARDS, SERIES_ORDER, FORMS, boardParts, fmtKB } from '../core/boards.js';
+import { BOARDS, VENDORS, seriesLabel, FORMS, boardParts, fmtKB } from '../core/boards.js';
+import { SDK_NAMES } from '../core/sdk.js';
 import { MODULE_TYPES, TYPE_ORDER, variantOf, MAX_MODULES } from '../core/parts.js';
 import { bench, SIM, moduleLabel, moduleById, moduleState, sensorTemp, supply } from '../core/sim.js';
 
 const GRADE = ['', '入門', '進階', '高階'];
 const RH_DEV = ['sht3x', 'aht20', 'hdc1080'];
-export const insp = { view:'overview', id:null, q:'', series:'all' };
+export const insp = { view:'overview', id:null, q:'', vendor:'all' };
+const kindTag = b => b.kind === 'official' ? '<span class="grade g3">官方開發板</span>' : '<span class="grade g1">通用評估板</span>';
 let act = {};
 
 const link = l => `<a class="dl" href="${esc(l.url)}" target="_blank" rel="noopener"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0L4.5 6.5M8 10l3.5-3.5M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>${esc(l.label)}</a>`;
@@ -16,7 +18,7 @@ const gradeTag = g => `<span class="grade g${g}">${GRADE[g]}</span>`;
 const specTable = rows => `<dl class="specs">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
 
 function boardSpecs(b){
-  return [['MCU', b.mcu], ['核心', `${b.core} · ${b.mhz} MHz`], ['Flash／RAM', `${fmtKB(b.flash)}／${fmtKB(b.ram)}`], ['封裝', b.pkg], ['板型', FORMS[b.form].name],
+  return [['廠牌', VENDORS.find(v => v.id === b.vendor).name], ['MCU', b.mcu], ['核心', `${b.core} · ${b.mhz} MHz`], ['SDK', SDK_NAMES[b.sdk]], ['Flash／RAM', `${fmtKB(b.flash)}／${fmtKB(b.ram)}`], ['封裝', b.pkg], ['板型', FORMS[b.form].name],
     ['燒錄器', b.prog], ['板載 LED', b.leds.map(l => `${l.name} ${l.pin}`).join('、')], ['使用者按鈕', b.btn ? `${b.btn.name} ${b.btn.pin}${b.btn.activeLow ? '（低電位有效）' : ''}` : '無'],
     ['I2C', `${b.i2c.bus}：SCL ${b.i2c.scl}、SDA ${b.i2c.sda}`], ['printf 輸出', `${b.vcp.periph}（${b.vcp.tx}/${b.vcp.rx}）`], ['Device ID', b.devId]];
 }
@@ -25,12 +27,13 @@ function overview(){
   const b = bench.board, parts = boardParts(b), mods = bench.modules;
   return `
   <section class="insp-sec">
-    <div class="row-head"><span class="eyebrow">開發板</span><button class="btn sm primary" data-act="boards" type="button">更換開發板</button></div>
+    <div class="row-head"><span class="eyebrow">開發板</span><button class="btn sm primary" data-act="boards" type="button">更換晶片／開發板</button></div>
     <button class="bcard" data-act="part" data-id="mcu" type="button">
-      <strong>${esc(b.name)}</strong>
-      <span class="mono">${esc(b.mcu)}</span>
+      <strong>${esc(b.name)} ${kindTag(b)}</strong>
+      <span class="mono">${esc(b.mcu)} · ${esc(SDK_NAMES[b.sdk])}</span>
       <span class="chipline"><i>${esc(b.core)}</i><i>${b.mhz} MHz</i><i>Flash ${fmtKB(b.flash)}</i><i>RAM ${fmtKB(b.ram)}</i><i>${b.header.length} 腳排針</i></span>
     </button>
+    ${b.note ? `<p class="note">${esc(b.note)}</p>` : ''}
     ${links(b.links)}
   </section>
   <section class="insp-sec">
@@ -48,16 +51,16 @@ function overview(){
 
 function boardsView(){
   const q = insp.q.trim().toLowerCase(), cur = bench.board.id;
-  const shown = BOARDS.filter(b => (insp.series === 'all' || b.series === insp.series) && (!q || `${b.name} ${b.mcu} ${b.core}`.toLowerCase().includes(q)));
-  const series = SERIES_ORDER.filter(s => BOARDS.some(b => b.series === s));
-  const groups = series.map(s => [s, shown.filter(b => b.series === s)]).filter(([, l]) => l.length);
+  const shown = BOARDS.filter(b => (insp.vendor === 'all' || b.vendor === insp.vendor) && (!q || `${b.name} ${b.mcu} ${b.core} ${b.series} ${b.vendor}`.toLowerCase().includes(q)));
+  const groups = VENDORS.flatMap(v => v.series.map(s => [v, s, shown.filter(b => b.vendor === v.id && b.series === s)])).filter(([, , l]) => l.length);
+  const count = id => BOARDS.filter(b => b.vendor === id).length;
   return `${back}
   <section class="insp-sec">
-    <h2>更換開發板（共 ${BOARDS.length} 塊）</h2>
-    <p class="note">切換後，接在新板子上不存在的腳位的線會自動拔除，Flash 會是空白的。Nucleo 系列使用 Arduino 相容的 A0–A5、D0–D15 腳位名稱，換成同系列的板子時接線大多可以保留。</p>
-    <input class="search" id="boardQuery" type="search" placeholder="搜尋型號，例如 F401、H7、M0+" value="${esc(insp.q)}" aria-label="搜尋開發板">
-    <div class="chips seriesf">${['all', ...series].map(s => `<button class="chip ${insp.series === s ? 'hi' : ''}" data-act="series" data-id="${s}" type="button">${s === 'all' ? '全部' : 'STM32' + s}</button>`).join('')}</div>
-    ${groups.map(([s, l]) => `<div class="bgroup"><span class="eyebrow">STM32${s}</span><ul class="plist">${l.map(b => `<li><button data-act="pick" data-id="${b.id}" type="button" class="${b.id === cur ? 'cur' : ''}"><span><strong>${esc(b.name)}</strong><small>${esc(b.mcu)} · ${esc(b.core)} ${b.mhz} MHz · ${fmtKB(b.flash)}／${fmtKB(b.ram)}</small></span>${b.id === cur ? '<span class="grade g3">使用中</span>' : '<span class="go">›</span>'}</button></li>`).join('')}</ul></div>`).join('') || '<p class="empty">找不到符合的開發板。</p>'}
+    <h2>更換晶片／開發板（共 ${BOARDS.length} 種）</h2>
+    <p class="note">切換後，接在新板子上不存在的腳位的線會自動拔除，Flash 是空白的。每家晶片使用自己原廠 SDK 的寫法：ST 用 STM32Cube HAL，TI 用 DriverLib／TivaWare／C2000Ware，NXP 用 MCUXpresso SDK。「載入範例程式」會產生對應的寫法。</p>
+    <input class="search" id="boardQuery" type="search" placeholder="搜尋型號，例如 F401、MSP430、K64、RT1060" value="${esc(insp.q)}" aria-label="搜尋晶片或開發板">
+    <div class="chips seriesf">${[['all', `全部 ${BOARDS.length}`], ...VENDORS.map(v => [v.id, `${v.id} ${count(v.id)}`])].map(([id, l]) => `<button class="chip ${insp.vendor === id ? 'hi' : ''}" data-act="vendor" data-id="${id}" type="button">${l}</button>`).join('')}</div>
+    ${groups.map(([v, s, l]) => `<div class="bgroup"><span class="eyebrow">${esc(v.id)} · ${esc(seriesLabel(v.id, s))}</span><ul class="plist">${l.map(b => `<li><button data-act="pick" data-id="${b.id}" type="button" class="${b.id === cur ? 'cur' : ''}"><span><strong>${esc(b.name)}</strong><small>${esc(b.mcu)} · ${esc(b.core)} ${b.mhz} MHz · ${fmtKB(b.flash)}／${fmtKB(b.ram)}</small></span>${b.id === cur ? '<span class="grade g3">使用中</span>' : b.kind === 'official' ? '<span class="grade g2">官方板</span>' : '<span class="go">›</span>'}</button></li>`).join('')}</ul></div>`).join('') || '<p class="empty">找不到符合的晶片。</p>'}
   </section>`;
 }
 
@@ -144,7 +147,7 @@ export function initInspector(actions){
       case 'boards': showInspector('boards'); break;
       case 'part': showInspector('part', id); act.focusPart?.(id); break;
       case 'module': showInspector('module', id); act.focusModule?.(id); break;
-      case 'series': insp.series = id; renderInspector(); break;
+      case 'vendor': insp.vendor = id; renderInspector(); break;
       case 'pick': act.changeBoard(id); break;
       case 'variant': act.setVariant(insp.id, id); break;
       case 'remove': act.removeModule(insp.id); break;

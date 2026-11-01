@@ -1,13 +1,19 @@
-// 開發板資料庫：37 塊 STM32 開發板。
-// 排針採各板的 Arduino 相容腳位（Nucleo）或晶片腳位名稱（Pill、Discovery），每塊 30–40 腳。
+// 開發板資料庫：ST（STM32，37 塊）＋ TI（boards-ti.js）＋ NXP（boards-nxp.js）。
+// ST 排針採各板的 Arduino 相容腳位（Nucleo）或晶片腳位名稱（Pill、Discovery），每塊 30–40 腳。
+import { TI_BOARDS } from './boards-ti.js';
+import { NXP_BOARDS } from './boards-nxp.js';
 
 /* ---------- 板型（外形與排針配置） ---------- */
 export const FORMS = {
-  n144:  { name:'Nucleo-144', w:92, d:124, pcb:0x15191d, stlink:true },
-  n64:   { name:'Nucleo-64',  w:82, d:112, pcb:0x15191d, stlink:true },
-  n32:   { name:'Nucleo-32',  w:44, d:84,  pcb:0x15191d, stlink:true },
-  pill:  { name:'Pill 小板',  w:40, d:108, pcb:0x1f4fa8, stlink:false },
-  disco: { name:'Discovery',  w:84, d:112, pcb:0x14281e, stlink:true },
+  n144:  { name:'Nucleo-144', w:92, d:124, pcb:0x15191d, dbg:true },
+  n64:   { name:'Nucleo-64',  w:82, d:112, pcb:0x15191d, dbg:true },
+  n32:   { name:'Nucleo-32',  w:44, d:84,  pcb:0x15191d, dbg:true },
+  pill:  { name:'Pill 小板',  w:40, d:108, pcb:0x1f4fa8, dbg:false },
+  disco: { name:'Discovery',  w:84, d:112, pcb:0x14281e, dbg:true },
+  lp:    { name:'LaunchPad',  w:84, d:112, pcb:0x9b1c1f, dbg:true },
+  frdm:  { name:'FRDM／LPCXpresso', w:84, d:112, pcb:0x1e2a3a, dbg:true },
+  evk:   { name:'EVK 評估套件', w:92, d:124, pcb:0x1c3324, dbg:true },
+  eval:  { name:'模擬器通用評估板', w:80, d:108, pcb:0x22303c, dbg:true },
 };
 
 const ARD64  = { A0:'PA0', A1:'PA1', A2:'PA4', A3:'PB0', A4:'PC1', A5:'PC0', D0:'PA3', D1:'PA2', D2:'PA10', D3:'PB3', D4:'PB5', D5:'PB4', D6:'PB10', D7:'PA8', D8:'PA9', D9:'PC7', D10:'PB6', D11:'PA7', D12:'PA6', D13:'PA5', D14:'PB9', D15:'PB8' };
@@ -99,12 +105,17 @@ function buildBoard(r){
     }
     return { id:pid, label, kind, mcu:mcuPin, tags };
   });
+  const v3 = /V3/.test(prog), pill = form === 'pill';
   return {
+    vendor:'ST', sdk:'stm32hal', pinStyle:'st', kind:'official', adcBits:12, adcDrv:'hal', adcInst:'ADC1', note:null,
+    dbg: pill ? null : { name:prog, part: v3 ? 'STM32F723IEK6' : 'STM32F103CBT6', desc:'板上的 ST-LINK，負責 SWD 燒錄、除錯與虛擬序列埠（VCP）。', url: v3 ? 'https://www.st.com/en/development-tools/stlink-v3set.html' : 'https://www.st.com/en/development-tools/st-link-v2.html' },
+    ldo: pill ? { part:'XC6206P332MR（662K）', desc:'小型 LDO，最大輸出約 200 mA，外接模組不宜過多。', url:'https://www.google.com/search?q=XC6206P332MR+datasheet+pdf' }
+      : { part:'LD39050PU33R', desc:'低壓降穩壓器，最大輸出 500 mA。外接模組的 3V3 都從這裡供電。', url:'https://www.st.com/resource/en/datasheet/ld39050.pdf' },
     id, name, series, mcu, core, mhz, flash, ram, form, prog, devId, pkg, base,
     leds: leds.map(([n, pin, color, activeLow]) => ({ name:n, pin, color, hex:LED_HEX[color], activeLow:!!activeLow })),
     btn: btn ? { name:btn[0], pin:btn[1], activeLow:btn[2] } : null,
     vcp: { periph:vcp[0], tx:vcp[1], rx:vcp[2], handle:vcp[3] },
-    i2c, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
+    i2c:{ ...i2c, inst:'I2C1' }, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
     links: [
       { label:`${mcu} Datasheet（PDF）`, url:`https://www.st.com/resource/en/datasheet/${base}.pdf` },
       { label:'MCU 產品頁（參考手冊、勘誤表）', url:`https://www.st.com/en/microcontrollers-microprocessors/${base}.html` },
@@ -113,26 +124,32 @@ function buildBoard(r){
   };
 }
 
-export const BOARDS = RAW.map(buildBoard);
+export const BOARDS = [...RAW.map(buildBoard), ...TI_BOARDS, ...NXP_BOARDS];
 export const BOARD_BY_ID = Object.fromEntries(BOARDS.map(b => [b.id, b]));
 export const DEFAULT_BOARD = 'nucleo-h743zi2';
-export const SERIES_ORDER = ['H7', 'H5', 'F7', 'F4', 'F3', 'F2', 'F1', 'F0', 'G4', 'G0', 'U5', 'L4', 'L1', 'L0'];
+export const VENDORS = [
+  { id:'ST', name:'STMicroelectronics', series:['H7', 'H5', 'F7', 'F4', 'F3', 'F2', 'F1', 'F0', 'G4', 'G0', 'U5', 'L4', 'L1', 'L0'] },
+  { id:'TI', name:'Texas Instruments', series:['MSPM0', 'MSP430', 'TM4C', 'C2000'] },
+  { id:'NXP', name:'NXP', series:['Kinetis', 'MCX', 'LPC', 'LPC800', 'i.MX RT'] },
+];
+export const seriesLabel = (vendor, s) => vendor === 'ST' ? 'STM32' + s : s;
 
 /** 開發板上的其他元件（顯示在「元件」分頁，附 datasheet） */
 export function boardParts(b){
   const parts = [{ key:'mcu', name:'主控 MCU', part:b.mcu, desc:`${b.core} · ${b.mhz} MHz · Flash ${fmtKB(b.flash)} · RAM ${fmtKB(b.ram)} · ${b.pkg}`, links:b.links.slice(0, 2) }];
-  if (FORMS[b.form].stlink){
-    const v3 = /V3/.test(b.prog);
-    parts.push({ key:'stlink', name:`燒錄器 ${b.prog}`, part: v3 ? 'STM32F723IEK6' : 'STM32F103CBT6', desc:'板上的 ST-LINK，負責 SWD 燒錄、除錯與虛擬序列埠（VCP）。',
-      links:[{ label:'ST-LINK 產品資訊', url: v3 ? 'https://www.st.com/en/development-tools/stlink-v3set.html' : 'https://www.st.com/en/development-tools/st-link-v2.html' }] });
-    parts.push({ key:'ldo', name:'3.3 V 穩壓器', part:'LD39050PU33R', desc:'低壓降穩壓器，最大輸出 500 mA。外接模組的 3V3 都從這裡供電。',
-      links:[{ label:'LD39050 Datasheet（PDF）', url:'https://www.st.com/resource/en/datasheet/ld39050.pdf' }] });
-  } else {
-    parts.push({ key:'ldo', name:'3.3 V 穩壓器', part:'XC6206P332MR（662K）', desc:'小型 LDO，最大輸出約 200 mA，外接模組不宜過多。',
-      links:[{ label:'搜尋 XC6206 Datasheet', url:'https://www.google.com/search?q=XC6206P332MR+datasheet+pdf' }] });
-    parts.push({ key:'xtal', name:'外部晶振', part:b.xtal || '8 MHz', desc:'HSE 時脈來源，經 PLL 倍頻成系統時脈。', links:[] });
-  }
+  if (b.dbg) parts.push({ key:'stlink', name:`燒錄器 ${b.dbg.name}`, part:b.dbg.part, desc:b.dbg.desc, links:[{ label:`${b.dbg.name} 產品資訊`, url:b.dbg.url }] });
+  if (b.ldo) parts.push({ key:'ldo', name:'3.3 V 穩壓器', part:b.ldo.part, desc:b.ldo.desc, links:[{ label:`${b.ldo.part.split('（')[0]} Datasheet`, url:b.ldo.url }] });
+  if (b.xtal) parts.push({ key:'xtal', name:'外部晶振', part:b.xtal, desc:'HSE 時脈來源，經 PLL 倍頻成系統時脈。', links:[] });
   return parts;
 }
-export const fmtKB = kb => kb >= 1024 ? `${+(kb / 1024).toFixed(2)} MB` : `${kb} KB`;
+/** 程式在 Flash（或外部 Flash）的起始位址 */
+export function flashBase(b){
+  if (b.vendor === 'ST') return 0x08000000;
+  if (b.series === 'MSP430') return /FR2|FR4/.test(b.mcu) ? 0x8000 : /FR5|FR6/.test(b.mcu) ? 0x4400 : 0x4400;
+  if (b.series === 'C2000') return 0x80000;
+  if (b.series === 'i.MX RT') return 0x60000000;
+  return 0x00000000;
+}
+export const hexAddr = n => '0x' + n.toString(16).toUpperCase().padStart(8, '0').replace(/(.{4})(.{4})/, '$1 $2');
+export const fmtKB = kb => !kb ? '外部 Flash' : kb >= 1024 ? `${+(kb / 1024).toFixed(2)} MB` : `${kb} KB`;
 export const pinTitle = p => p.kind === 'gpio' && p.mcu && p.mcu !== p.label ? `${p.label}（${p.mcu}）` : p.label;

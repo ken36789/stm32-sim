@@ -7,7 +7,7 @@ import { hooks } from './core/hooks.js';
 import { SIM, bench, PINS, PIN_ORDER, wires, addWire, removeWire, clearWires, wireOf, refreshNet, powered, readPin, moduleState, boardLedOn, i2cDevices, sensorTemp,
   checkDamage, tickSim, setBoard, addModule, removeModule, setVariant, moduleById, moduleLabel, resetBench } from './core/sim.js';
 import { runChecks } from './core/checks.js';
-import { startProgram, stopProgram } from './core/runtime.js';
+import { startProgram, stopProgram, isRunning } from './core/runtime.js';
 import { suggestWiring, exampleCode } from './core/codegen.js';
 import { R, G, initScene, buildBench, fitView, setLed, pressCap, buildWireMesh, disposeWireMesh, sceneBg, setUsbVisible } from './scene/scene.js';
 import { updateModule } from './scene/modules3d.js';
@@ -28,8 +28,8 @@ function wireHooks(){
     outputs: () => outputsChanged(), serial: serialOut, sys: serialSys, run: setRun,
     sensorDamaged: () => outputsChanged(), recheck: () => doCheck(), benchChanged: onBenchChanged,
   });
-  editorEvents.change = store;
-  editorEvents.save = flash;
+  editorEvents.change = () => { codeChanged(); store(); };
+  editorEvents.save = tryFlash;
 }
 
 /* ---- 主題（系統／淺色／深色） ---- */
@@ -63,7 +63,44 @@ TABS.forEach((t, i) => {
 /* ---- 範例程式 ---- */
 UI.lastExample = null;
 const isExampleCode = () => UI.lastExample !== null && ta.value === UI.lastExample;
-function setCode(src, asExample){ ta.value = src; UI.lastExample = asExample ? src : null; syncEditor(); store(); }
+function setCode(src, asExample){ ta.value = src; UI.lastExample = asExample ? src : null; syncEditor(); codeChanged(); store(); }
+
+/* ---- 實驗流程：任何硬體或程式變更後，都要重新檢測（無錯誤）並重新編譯，才能燒錄 ---- */
+UI.rev = { hw:0, code:0 }; UI.checkOk = null; UI.checkBad = null; UI.built = null;
+const sameRev = r => r && r.hw === UI.rev.hw && r.code === UI.rev.code;
+const checkDone = () => sameRev(UI.checkOk), buildDone = () => sameRev(UI.built);
+const flashDone = () => SIM.flashed && !SIM.flashed.stale && sameRev(SIM.flashed.rev);
+const canRun = () => SIM.flashed && !SIM.flashed.stale;
+function hwChanged(){
+  UI.rev.hw++;
+  if (SIM.flashed && !SIM.flashed.stale){
+    SIM.flashed.stale = true;
+    if (isRunning()){ stopProgram(true); outputsReset(); serialSys('硬體已變更，MCU 已停止。請重新檢測、編譯並燒錄。', 'er'); }
+    setRun('stale'); updatePills(); updateButtons();
+  }
+  renderFlow();
+}
+function codeChanged(){ UI.rev.code++; renderFlow(); }
+function renderFlow(){
+  const st = { check: checkDone() ? 'done' : sameRev(UI.checkBad) ? 'bad' : 'need', build: buildDone() ? 'done' : 'need', flash: flashDone() ? 'done' : checkDone() && buildDone() ? 'need' : '' };
+  const mark = { done:'✓', bad:'✕', need:'', '':'' };
+  document.querySelectorAll('#flow .step').forEach(b => { const k = b.dataset.step; b.className = 'step ' + st[k]; b.querySelector('i').textContent = mark[st[k]]; });
+}
+function nudgeFlow(){ const f = $('#flow'); f.classList.remove('pulse'); void f.offsetWidth; f.classList.add('pulse'); }
+async function tryFlash(){
+  if (!checkDone()){ toast(sameRev(UI.checkBad) ? '接線檢測還有錯誤，修正後再檢測一次。' : '請先完成「接線檢測」。每次更換晶片、模組、接線或修改程式後都要重新檢測。', 'err'); nudgeFlow(); showTab('check'); return; }
+  if (!buildDone()){ toast('請先按「編譯」，確認目前的程式沒有錯誤。', 'err'); nudgeFlow(); showTab('code'); return; }
+  await flash();
+  if (SIM.flashed && !SIM.flashed.rev) SIM.flashed.rev = { ...UI.rev };
+  renderFlow();
+}
+function doBuild(){ const r = build(); UI.built = r.ok ? { ...UI.rev } : null; renderFlow(); toast(r.ok ? '編譯成功。' : '編譯失敗，請看建置輸出。', r.ok ? '' : 'err'); return r; }
+document.querySelectorAll('#flow .step').forEach(b => b.addEventListener('click', () => {
+  const k = b.dataset.step;
+  if (k === 'check'){ showTab('check'); doCheck(false); }
+  else if (k === 'build'){ showTab('code'); doBuild(); }
+  else { showTab('code'); tryFlash(); }
+}));
 function refreshExample(){ if (isExampleCode()){ const c = exampleCode(); if (c !== ta.value) setCode(c, true); } }
 $('#btnExample').addEventListener('click', () => { setCode(exampleCode(), true); log(`已載入 ${bench.board.name} 的範例程式，腳位依目前接線產生。`, 'lo'); toast('已載入範例程式。'); });
 
@@ -71,7 +108,7 @@ $('#btnExample').addEventListener('click', () => { setCode(exampleCode(), true);
 function renderBoardInfo(){
   const b = bench.board;
   $('#boardSub').textContent = `${b.name} · ${b.mcu} · ${b.core} ${b.mhz} MHz`;
-  $('#serialInfo').textContent = `${b.vcp.periph} · ${b.form === 'pill' ? 'USB 轉 TTL（PA9／PA10）' : 'ST-LINK 虛擬 COM'} · 115200 8N1`;
+  $('#serialInfo').textContent = `${b.vcp.periph} · ${b.form === 'pill' ? 'USB 轉 TTL（PA9／PA10）' : `${b.prog} 虛擬序列埠`} · 115200 8N1`;
   $('#pinmapNote').textContent = `${b.name} 的 ${b.header.length} 腳排針。左右兩欄對應實際排列，1 號腳在左上。I2C：${b.i2c.scl}（SCL）、${b.i2c.sda}（SDA）。`;
 }
 function onBenchChanged(){
@@ -154,7 +191,7 @@ function renderHint(){
   if (UI.sel && PINS[UI.sel]){ const p = PINS[UI.sel]; h.hidden = false; h.innerHTML = `已選 <span class="sel">${esc(p.label)}</span>（${esc(p.func.split(' · ')[0])}）<br>再點另一個腳位接線；點空白處取消。`; return; }
   let seen = false; try { seen = localStorage.getItem('stm32-sim-hint') === '1'; } catch (_){}
   h.hidden = seen;
-  h.innerHTML = `<ol><li><b>1</b>點兩個金色腳位接線，或按「建議接線」</li><li><b>2</b>點晶片或模組可以查看資料、更換型號</li><li><b>3</b>到「檢測」檢查，再到「程式」燒錄</li></ol>`;
+  h.innerHTML = `<ol><li><b>1</b>點兩個金色腳位接線，或按「建議接線」</li><li><b>2</b>點晶片或模組可以查看資料、更換型號</li><li><b>3</b>依序完成上方的檢測、編譯、燒錄</li></ol>`;
 }
 function hintSeen(){ try { localStorage.setItem('stm32-sim-hint', '1'); } catch (_){} }
 function selectWire(w){
@@ -208,7 +245,7 @@ function setHover(h, e){
 function pressButton(which, down){
   pressCap(which, down);
   if (which === 'B1') SIM.b1 = down;
-  else if (which === 'RESET'){ if (down){ stopProgram(true); outputsReset(); if (SIM.flashed && powered()) setRun('reset'); } else if (SIM.flashed && powered()) startProgram(); }
+  else if (which === 'RESET'){ if (!canRun()){ if (down && SIM.flashed) toast('硬體已變更，請重新檢測、編譯並燒錄後再重設。', 'err'); } else if (down){ stopProgram(true); outputsReset(); if (powered()) setRun('reset'); } else if (powered()) startProgram(); }
   else { const m = moduleById(which); if (m) m.st.pressed = down; }
   outputsChanged();
 }
@@ -234,13 +271,13 @@ function setupPointer(){
 
 /* ---- 電源、輸出與聲音 ---- */
 let wasPowered = null;
-function afterWiring(){ refreshNet(); electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store(); }
+function afterWiring(){ refreshNet(); hwChanged(); electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store(); }
 function electricalUpdate(){
   const p = powered();
   for (const m of checkDamage()) toast(`${moduleLabel(m)}（${variantOf(m.type, m.variant).part}）的電壓過高，已損壞（模擬）。改好接線後到「檢測」更換。`, 'err');
   if (wasPowered !== null && p !== wasPowered){
     if (!p){ stopProgram(true); outputsReset(); setRun(SIM.flashed ? 'off' : 'idle'); toast(SIM.usb ? '短路！USB 過電流保護啟動，開發板斷電。' : 'USB 已拔除，開發板斷電。', SIM.usb ? 'err' : ''); }
-    else { toast('開發板通電。'); if (SIM.flashed) startProgram(); else setRun('idle'); }
+    else { toast('開發板通電。'); if (canRun()) startProgram(); else setRun(SIM.flashed ? 'stale' : 'idle'); }
   }
   wasPowered = p; outputsChanged(); updatePills();
 }
@@ -264,8 +301,18 @@ function relayClick(){
   for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / 70);
   const s = c.createBufferSource(), g = c.createGain(); g.gain.value = .25; s.buffer = buf; s.connect(g); g.connect(c.destination); s.start();
 }
+function testBeep(){
+  if (!audio.ctx) return;
+  const c = audio.ctx, o = c.createOscillator(), g = c.createGain(); o.type = 'square'; o.frequency.value = 2300; g.gain.value = .035;
+  o.connect(g); g.connect(c.destination); o.start(); o.stop(c.currentTime + .12);
+}
 $('#btnSound').addEventListener('click', e => {
-  audio.enabled = !audio.enabled; if (audio.enabled) ensureAudio(); else setBuzz(false);
+  audio.enabled = !audio.enabled;
+  if (audio.enabled){
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (_){}   // iOS：靜音開關打開時也能發聲
+    ensureAudio(); testBeep();
+    toast(bench.modules.some(m => m.type === 'buzzer') ? '聲音已開啟。程式執行時，按住按鈕模組，蜂鳴器就會響。' : '聲音已開啟。到「元件」分頁新增蜂鳴器模組，就能聽到程式控制的聲音。');
+  } else setBuzz(false);
   e.currentTarget.textContent = audio.enabled ? '聲音：開' : '聲音：關'; e.currentTarget.setAttribute('aria-pressed', audio.enabled); outputsChanged(); store();
 });
 function applyOutputs(){
@@ -282,15 +329,16 @@ function applyOutputs(){
   const pins = Object.keys(SIM.mode).sort();
   $('#gpioChips').innerHTML = pins.length ? pins.map(k => { const v = SIM.mode[k] === 'out' ? SIM.out[k] : readPin(k); return `<span class="chip ${v ? 'hi' : ''}">${k}<i>${SIM.mode[k] === 'out' ? '輸出' : '輸入'}</i>${v ? 'H' : 'L'}</span>`; }).join('') : '<span class="note" style="margin:0">程式執行後，這裡會顯示用到的 GPIO 與電位。</span>';
 }
-$('#btnBuild').addEventListener('click', () => { const r = build(); toast(r.ok ? '編譯成功。' : '編譯失敗，請看建置輸出。', r.ok ? '' : 'err'); });
-$('#btnFlash').addEventListener('click', flash);
-$('#btnReset').addEventListener('click', () => { if (SIM.flashed && powered()) startProgram(); });
+$('#btnBuild').addEventListener('click', doBuild);
+$('#btnFlash').addEventListener('click', tryFlash);
+$('#btnReset').addEventListener('click', () => { if (canRun() && powered()) startProgram(); });
 $('#btnStop').addEventListener('click', () => { stopProgram(); outputsChanged(); serialSys('除錯器已暫停 MCU'); });
 
 /* ---- 檢測 ---- */
 function doCheck(quiet){
   UI.checked = true;
   const res = runChecks(codeValue()), cnt = { err:0, warn:0, ok:0, info:0 }; res.forEach(r => cnt[r.sev]++);
+  if (!quiet){ UI.checkOk = cnt.err ? null : { ...UI.rev }; UI.checkBad = cnt.err ? { ...UI.rev } : null; renderFlow(); }
   $('#bCheck').hidden = !cnt.err; $('#bCheck').textContent = cnt.err;
   const lab = { err:'錯誤', warn:'警告', ok:'通過', info:'提示' };
   $('#sum').innerHTML = ['err', 'warn', 'ok'].map(k => `<span class="tag ${k}">${lab[k]} ${cnt[k]}</span>`).join('');
@@ -338,6 +386,9 @@ function loop(t){
   R.renderer.render(R.scene, R.camera);
 }
 
+/* ---- iPhone／iPad：長按按鈕、清單或 3D 畫面時不要跳出選單 ---- */
+document.addEventListener('contextmenu', e => { if (e.target.closest('button, .tabs, .flow, .plist, .wires li, .results li, .chips, .stage, .pill')) e.preventDefault(); });
+
 /* ---- 主題變更時更新 3D 背景 ---- */
 function themeChanged(){ if (R.scene) R.scene.background = new THREE.Color(sceneBg()); }
 const darkMq = matchMedia('(prefers-color-scheme: dark)');
@@ -366,7 +417,7 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
   if (saved && typeof saved.code === 'string'){ ta.value = saved.code; UI.lastExample = saved.example ? saved.code : null; syncEditor(); }
   else setCode(exampleCode(), true);
   fillSelects(); renderPinMap(); renderInspector();
-  afterWiring(); setUsb(true); updateButtons();
+  afterWiring(); setUsb(true); updateButtons(); renderFlow();
   if (saved?.sound){ audio.enabled = true; $('#btnSound').textContent = '聲音：開'; $('#btnSound').setAttribute('aria-pressed', 'true'); document.addEventListener('pointerdown', ensureAudio, { once:true }); }
   if (saved && TABS.includes(saved.tab)) showTab(saved.tab);
   if (ok3d) requestAnimationFrame(loop);

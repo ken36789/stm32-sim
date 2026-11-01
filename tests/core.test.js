@@ -29,21 +29,22 @@ async function run(ms, during){
   return out;
 }
 
-test('至少 30 塊開發板，排針資料完整', () => {
-  assert.ok(BOARDS.length >= 30, `只有 ${BOARDS.length} 塊`);
+test('ST、TI、NXP 各至少 30 種晶片，排針資料完整', () => {
+  for (const v of ["ST", "TI", "NXP"]) assert.ok(BOARDS.filter(b => b.vendor === v).length >= 30, v);
   for (const b of BOARDS){
-    assert.ok(b.header.length >= 30, b.id);
+    assert.ok(b.header.length >= 20, b.id);
     assert.ok(b.header.find(h => h.label === b.i2c.scl) && b.header.find(h => h.label === b.i2c.sda), `${b.id} 缺少 I2C 腳`);
     assert.ok(b.header.some(h => h.tags.includes('adc')), `${b.id} 沒有 ADC 腳`);
     assert.equal(new Set(b.header.filter(h => h.mcu).map(h => h.mcu)).size, b.header.filter(h => h.mcu).length, `${b.id} 有重複的 MCU 腳位`);
   }
 });
 
-test('每塊開發板：建議接線 + 範例程式可以編譯，檢測沒有錯誤或警告', () => {
+test('全部 116 種晶片：建議接線 + 範例程式可以編譯（無警告），檢測沒有錯誤或警告', () => {
   for (const b of BOARDS){
     setup(b.id);
     const c = compile(exampleCode());
     assert.equal(c.ok, true, `${b.id}: ${JSON.stringify(c.diag)}`);
+    assert.deepEqual(c.diag, [], b.id);
     assert.deepEqual(problems(runChecks(exampleCode())), [], b.id);
   }
 });
@@ -126,4 +127,37 @@ test('編譯錯誤：缺少分號、不存在的腳位、不支援的函式', ()
   assert.match(msgs, /expected ';' before '}'/);
   assert.match(msgs, /'GPIO_PIN_16' undeclared/);
   assert.match(msgs, /implicit declaration of function 'HAL_SPI_Transmit'/);
+});
+
+test('每一種 SDK 的範例程式都能執行：GPIO、按鈕→蜂鳴器、I2C 感測器、ADC', async () => {
+  const cases = { 'nucleo-f401re':'STM32 HAL', mspm0g3507:'MSPM0', msp430fr2355:'MSP430 eUSCI', msp430f5529:'MSP430 USCI', tm4c123gh6pm:'TivaWare', tms320f28379d:'C2000',
+    mk64fn1m0vll12:'Kinetis', lpc55s69jbd100:'LPC55', lpc845m301jbd48:'LPC800', mimxrt1062dvl6b:'i.MX RT', mcxn947vdf:'MCX' };
+  for (const [id, label] of Object.entries(cases)){
+    setup(id, [{ type:'led' }, { type:'button' }, { type:'temp', variant:'sht31' }, { type:'pot' }, { type:'buzzer' }]);
+    const btn = bench.modules[1], buz = bench.modules[4];
+    bench.modules[3].st.pot = .25;
+    let buzzing = false;
+    const out = await run(1250, async () => { await sleep(250); btn.st.pressed = true; await sleep(120); buzzing = moduleState(buz).on; });
+    btn.st.pressed = false;
+    assert.ok(buzzing, `${label}：按下按鈕時蜂鳴器沒有響`);
+    assert.match(out, /溫度 = \d+\.\d\d °C/, `${label}：${out}`);
+    assert.match(out, /ADC = +\d+/, `${label}：${out}`);
+    assert.ok(Object.values(SIM.mode).includes('out'), `${label}：沒有任何 GPIO 輸出`);
+  }
+});
+
+test('TI／NXP 程式沒有控制 LED 所接的腳位時，檢測會警告', () => {
+  for (const id of ['msp430fr2355', 'mk64fn1m0vll12', 'tms320f28379d']){
+    setup(id, [{ type:'led' }]);
+    const code = exampleCode().replace(/#define LED_EXT_\w+[^\n]*\n/g, m => m.replace(/(P\d\.|PT[A-E]|GPIO_PIN|PIN\s+)(\d+)/, (x, a, n) => a + (+n + 1)));
+    const warns = runChecks(code).filter(r => r.sev === 'warn').map(r => r.title).join('\n');
+    assert.match(warns, /程式沒有控制/, id);
+  }
+});
+
+test('不支援的 SDK 設定函式只會警告並略過，不會讓編譯失敗', () => {
+  setup('mspm0g3507', []);
+  const c = compile(exampleCode().replace('SYSCFG_DL_init();', 'SYSCFG_DL_init();\n  DL_TimerG_startCounter(TIMER_0_INST);'));
+  assert.equal(c.ok, true);
+  assert.match(c.diag.map(d => d.msg).join(), /DL_TimerG_startCounter.*略過/);
 });

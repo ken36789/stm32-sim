@@ -1,5 +1,6 @@
 // 執行燒錄到 Flash 的程式（每次重設都重新開始）
-import { SIM, powered } from './sim.js';
+import { SIM, powered, bench } from './sim.js';
+import { flashBase, hexAddr } from './boards.js';
 import { makeAPI, API_NAMES, STOP } from './hal.js';
 import { AsyncFunction } from './compiler.js';
 import { hooks } from './hooks.js';
@@ -10,7 +11,7 @@ export function startProgram(){
   if (!SIM.flashed || !powered()) return;
   const r = { stop:false, t0:performance.now(), id:++runSeq }; RUN = r;
   SIM.out = {}; SIM.mode = {}; hooks.outputs();
-  hooks.run('run'); hooks.sys('MCU 重設，從 0x0800 0000 開始執行');
+  hooks.run('run'); hooks.sys(`MCU 重設，從 ${hexAddr(flashBase(bench.board))} 開始執行`);
   let fn; try { fn = new AsyncFunction(...API_NAMES, SIM.flashed.js); } catch (e){ hooks.run('fault'); hooks.sys('無法啟動：' + e.message, 'er'); return; }
   const api = makeAPI(r);
   fn(...API_NAMES.map(k => api[k])).then(() => {

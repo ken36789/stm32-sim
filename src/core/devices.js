@@ -27,7 +27,7 @@ export function makeDevice(v, readT, readRH){
   const addr = v.addr;
   switch (v.dev){
     case 'bmx280': {
-      const regs = { 0xF4:0x00, 0xF5:0x00, 0xF2:0x00 };
+      const regs = { 0xF4:0x00, 0xF5:0x00, 0xF2:0x00 }; let ptr = 0;
       const calib = [T1 & 0xFF, T1 >> 8, T2 & 0xFF, (T2 >> 8) & 0xFF, T3 & 0xFF, (T3 >> 8) & 0xFF];
       const byteAt = r => {
         if (r === 0xD0) return v.chipId;
@@ -48,8 +48,8 @@ export function makeDevice(v, readT, readRH){
         addr,
         read:(reg, n) => Array.from({ length:n }, (_, i) => byteAt(reg + i)),
         write:(reg, bytes) => { bytes.forEach((b, i) => { regs[reg + i] = b & 0xFF; }); return true; },
-        tx:bytes => { if (bytes.length > 1) regs[bytes[0]] = bytes[1] & 0xFF; return true; },
-        rx:n => Array(n).fill(0),
+        tx:bytes => { if (!bytes.length) return true; ptr = bytes[0]; bytes.slice(1).forEach((b, i) => { regs[ptr + i] = b & 0xFF; }); return true; },
+        rx:n => Array.from({ length:n }, (_, i) => byteAt(ptr + i)),
       };
     }
     case 'lm75':
