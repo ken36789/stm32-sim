@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>STM32H7 接線實驗台</title>
+<meta name="description" content="在瀏覽器裡用 3D 模擬 STM32H743 開發板接線、檢測接線錯誤，並編譯燒錄 C/HAL 程式。">
+<meta name="theme-color" content="#e7ecef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e1418" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect x="7" y="7" width="16" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11 3v4M15 3v4M19 3v4M11 23v4M15 23v4M19 23v4M3 11h4M3 15h4M3 19h4M23 11h4M23 15h4M23 19h4" stroke="currentColor" stroke-width="1.6"/><circle cx="11" cy="11" r="1.4" fill="currentColor"/></svg>
+      <div>
+        <h1>STM32H7 接線實驗台</h1>
+        <p class="sub">STM32H743ZI · Cortex-M7 480 MHz · 2 MB Flash · 1 MB RAM</p>
+      </div>
+    </div>
+    <div class="status" aria-live="polite">
+      <button class="btn sm theme-btn" id="btnTheme" type="button">主題：跟隨系統</button>
+      <span class="pill" id="pPower"><i></i><span>USB 供電</span></span>
+      <span class="pill" id="pFlash"><i></i><span>Flash 空白</span></span>
+      <span class="pill" id="pRun"><i></i><span>待機</span></span>
+    </div>
+  </header>
+
+  <section class="stage" id="stage" aria-label="3D 開發板：拖曳旋轉、雙指縮放，點兩個腳位接線">
+    <div class="loading" id="loading">載入 3D 開發板…</div>
+    <div class="hint" id="hint"></div>
+    <div class="tip" id="tip" hidden></div>
+    <div class="wirepop" id="wirepop" hidden><span class="sw" id="wpSw"></span><span id="wpText"></span><button class="btn sm danger" id="wpDel" type="button">拔除</button></div>
+    <div class="temp" id="tempRead" hidden></div>
+    <div class="stage-tools">
+      <button class="btn sm" id="btnUsb" type="button">拔除 USB</button>
+      <button class="btn sm" id="btnView" type="button">重設視角</button>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="tabs" role="tablist" aria-label="功能">
+      <button role="tab" id="t-wire" aria-controls="tab-wire" aria-selected="true">接線</button>
+      <button role="tab" id="t-check" aria-controls="tab-check" aria-selected="false" tabindex="-1">檢測 <b class="badge" id="bCheck" hidden></b></button>
+      <button role="tab" id="t-code" aria-controls="tab-code" aria-selected="false" tabindex="-1">程式</button>
+      <button role="tab" id="t-serial" aria-controls="tab-serial" aria-selected="false" tabindex="-1">序列埠 <b class="badge n" id="bSerial" hidden></b></button>
+    </div>
+
+    <div class="tabpanel" id="tab-wire" role="tabpanel" aria-labelledby="t-wire">
+      <section class="block">
+        <div>
+          <h2>新增接線</h2>
+          <p class="note">在 3D 畫面依序點兩個金色腳位就會接上杜邦線。也可以在這裡選擇。</p>
+        </div>
+        <div class="form">
+          <label for="selA">起點<select id="selA"></select></label>
+          <label for="selB">終點<select id="selB"></select></label>
+          <div class="wide">
+            <label for="selColor">線色<select id="selColor"></select></label>
+            <button class="btn primary" id="btnAdd" type="button">接上</button>
+          </div>
+        </div>
+      </section>
+      <section class="block">
+        <div class="row-head">
+          <h2>目前接線<span class="count" id="wireCount"></span></h2>
+          <div class="btns">
+            <button class="btn sm" id="btnSample" type="button">範例接線</button>
+            <button class="btn sm" id="btnFull" type="button">完整接線</button>
+            <button class="btn sm danger" id="btnClear" type="button">全部拔除</button>
+          </div>
+        </div>
+        <ul class="wires" id="wireList"></ul>
+      </section>
+      <section class="block">
+        <div>
+          <h2>J1 排針腳位</h2>
+          <p class="note">左右兩欄對應板上排針的實際排列，1 號腳在左上。</p>
+        </div>
+        <div class="pinmap" id="pinmap"></div>
+      </section>
+    </div>
+
+    <div class="tabpanel" id="tab-check" role="tabpanel" aria-labelledby="t-check" hidden>
+      <div class="check-head">
+        <button class="btn primary" id="btnCheck" type="button">執行接線檢測</button>
+        <div class="summary" id="sum"></div>
+      </div>
+      <p class="note" style="margin:0">檢查短路、電源電壓、I2C 腳位、腳位是否接反，並對照程式實際控制的 GPIO。點任一項目會在 3D 畫面標出相關腳位。</p>
+      <ul class="results" id="results"></ul>
+    </div>
+
+    <div class="tabpanel fill" id="tab-code" role="tabpanel" aria-labelledby="t-code" hidden>
+      <div class="code-tools">
+        <span class="file">Core/Src/main.c</span>
+        <div class="btns">
+          <button class="btn sm" id="btnBuild" type="button">編譯</button>
+          <button class="btn sm primary" id="btnFlash" type="button">編譯並燒錄</button>
+          <button class="btn sm" id="btnReset" type="button">重設</button>
+          <button class="btn sm" id="btnStop" type="button">停止</button>
+        </div>
+      </div>
+      <div class="editor">
+        <div class="gutter" id="gutter" aria-hidden="true"></div>
+        <div class="code-wrap">
+          <pre aria-hidden="true"><code id="hl"></code></pre>
+          <textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" wrap="off" aria-label="main.c 原始碼"></textarea>
+        </div>
+      </div>
+      <div class="buildlog">
+        <div class="bl-head"><span class="eyebrow">建置與燒錄輸出</span><div class="prog" id="prog" hidden><i id="progBar"></i></div></div>
+        <pre class="log" id="log"></pre>
+      </div>
+      <details class="api">
+        <summary>模擬器支援的 HAL 函式</summary>
+        <ul>
+          <li><code>HAL_GPIO_WritePin / TogglePin / ReadPin</code>：GPIOA–K，GPIO_PIN_0–15，可用 | 合併</li>
+          <li><code>HAL_Delay(ms)</code>、<code>HAL_GetTick()</code></li>
+          <li><code>HAL_I2C_Mem_Read(&amp;hi2c1, addr, reg, size, buf, len, timeout)</code>、<code>HAL_I2C_IsDeviceReady</code></li>
+          <li>感測器位址 0x76：暫存器 0xD0 = 晶片 ID 0x60；0xFA–0xFB = 溫度 ×100（16 位元）</li>
+          <li><code>printf</code>、<code>sprintf</code>、<code>HAL_UART_Transmit(&amp;huart3, …)</code> → 序列埠</li>
+          <li>板載：LD1 綠 PB0、LD2 黃 PE1、LD3 紅 PB14、B1 USER 按鈕 PC13</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="tabpanel fill" id="tab-serial" role="tabpanel" aria-labelledby="t-serial" hidden>
+      <section class="block" style="flex:none">
+        <span class="eyebrow">GPIO 即時狀態</span>
+        <div class="chips" id="gpioChips"></div>
+      </section>
+      <div class="serial-head">
+        <span>USART3 · ST-LINK 虛擬 COM · 115200 8N1</span>
+        <button class="btn sm" id="btnSerClear" type="button">清除</button>
+      </div>
+      <pre class="serial" id="serial" aria-live="off"></pre>
+    </div>
+  </aside>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
