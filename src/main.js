@@ -255,7 +255,8 @@ function loop(t){
 
 /* ---- 主題 ---- */
 function themeChanged(){ if (R.scene) R.scene.background = new THREE.Color(sceneBg()); }
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeChanged);
+const darkMq = matchMedia('(prefers-color-scheme: dark)');
+if (darkMq.addEventListener) darkMq.addEventListener('change', themeChanged); else darkMq.addListener(themeChanged);
 new MutationObserver(themeChanged).observe(document.documentElement, { attributes:true, attributeFilter:['data-theme'] });
 
 /* ---- 啟動 ---- */

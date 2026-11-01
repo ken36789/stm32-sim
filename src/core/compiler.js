@@ -110,7 +110,8 @@ export function transpile(s, userFns){
   s = s.replace(/([(,=]\s*)&(?=\s*[A-Za-z_])/g, '$1');
   s = s.replace(/->/g, '.');
   const asy = [...ASYNC_BUILTIN, ...[...userFns].filter(n => n !== 'main')];
-  s = s.replace(new RegExp(String.raw`(?<![\w.$])(${asy.join('|')})\s*\(`, 'g'), (x, name, off, str) => /function\s+$/.test(str.slice(Math.max(0, off - 12), off)) ? x : `await ${name}(`);
+  // 不用 lookbehind，舊版 Safari（iOS 16.3 以前）不支援
+  s = s.replace(new RegExp(String.raw`\b(${asy.join('|')})\s*\(`, 'g'), (x, name, off, str) => (/[.$]/.test(str[off - 1] || '') || /function\s+$/.test(str.slice(Math.max(0, off - 12), off))) ? x : `await ${name}(`);
   s = insertYields(s);
   s = s.replace(/__S(\d+)__/g, (x, i) => strs[+i]);
   return s + '\n;return await main();';
