@@ -1,5 +1,5 @@
 {
-  "name": "stm32h7-sim",
+  "name": "stm32-sim",
   "version": "0.1.0",
   "private": true,
   "description": "瀏覽器裡的 STM32H743 3D 接線、接線檢測與程式燒錄模擬器",
