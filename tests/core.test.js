@@ -20,12 +20,19 @@ function setup(boardId, mods = DEFAULT_MODULES){
   suggestWiring().forEach(([a, b]) => assert.ok(addWire(a, b, null, true), `接線失敗 ${a} → ${b}`));
   refreshNet();
 }
-async function run(ms, during){
+// 等到條件成立（或逾時）。用輪詢而不是固定等待，機器忙碌時測試也不會誤判。
+async function until(cond, ms = 4000){
+  const t0 = Date.now();
+  while (!cond()){ if (Date.now() - t0 > ms) return false; await sleep(10); }
+  return true;
+}
+// 燒錄範例程式並執行，直到序列埠輸出符合 want 的所有規則（最多等 max 毫秒）。
+async function run(want, during, max = 6000){
   let out = ''; hooks.serial = s => { out += s; };
   const c = compile(exampleCode()); assert.equal(c.ok, true, JSON.stringify(c.diag));
   SIM.flashed = { js:c.js, size:c.size.text }; startProgram();
   if (during) await during();
-  await sleep(ms); stopProgram(true);
+  await until(() => want.every(r => r.test(out)), max); stopProgram(true);
   return out;
 }
 
@@ -62,7 +69,7 @@ test('所有模組同時接上（8 個）也能自動接線並通過檢測', () 
 test('每一種溫度感測器型號都能讀到合理溫度', async () => {
   for (const v of MODULE_TYPES.temp.variants){
     setup('nucleo-f411re', [{ type:'temp', variant:v.id }]);
-    const out = await run(1300);
+    const out = await run([/溫度 = /]);
     const t = out.match(/溫度 = (-?\d+\.\d+)/);
     assert.ok(t, `${v.id} 沒有讀到溫度：${out}`);
     assert.ok(Math.abs(+t[1] - SIM.ambient.T) < 3, `${v.id} 溫度 ${t[1]}`);
@@ -91,7 +98,7 @@ test('程式執行：按鈕、ADC、板載 LED', async () => {
   setup('nucleo-f401re', [{ type:'button' }, { type:'pot' }, { type:'buzzer' }]);
   const btn = bench.modules[0], buz = bench.modules[2];
   bench.modules[1].st.pot = .5;
-  const out = await run(1200, async () => { await sleep(200); btn.st.pressed = true; await sleep(100); assert.equal(moduleState(buz).on, true); });
+  const out = await run([/ADC = /], async () => { await sleep(200); btn.st.pressed = true; assert.ok(await until(() => moduleState(buz).on), '按下按鈕時蜂鳴器沒有響'); });
   assert.match(out, /ADC = +\d+ \(1\.6\d V\)/);
   assert.equal(readPin('PA10'), 1);
   btn.st.pressed = false;
@@ -137,7 +144,7 @@ test('每一種 SDK 的範例程式都能執行：GPIO、按鈕→蜂鳴器、I2
     const btn = bench.modules[1], buz = bench.modules[4];
     bench.modules[3].st.pot = .25;
     let buzzing = false;
-    const out = await run(1250, async () => { await sleep(250); btn.st.pressed = true; await sleep(120); buzzing = moduleState(buz).on; });
+    const out = await run([/溫度 = /, /ADC = /], async () => { await sleep(250); btn.st.pressed = true; buzzing = await until(() => moduleState(buz).on); });
     btn.st.pressed = false;
     assert.ok(buzzing, `${label}：按下按鈕時蜂鳴器沒有響`);
     assert.match(out, /溫度 = \d+\.\d\d °C/, `${label}：${out}`);
