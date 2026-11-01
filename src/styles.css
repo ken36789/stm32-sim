@@ -186,3 +186,51 @@ details.api ul{margin:6px 0 0;padding-left:18px;max-height:140px;overflow:auto}
 @supports (height:100dvh){ html,body{height:100dvh} }
 .stage{-webkit-touch-callout:none}
 button,select,[role="tab"]{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+
+/* 元件分頁 */
+#inspector{display:flex;flex-direction:column;gap:18px}
+.insp-sec{display:flex;flex-direction:column;gap:10px;min-width:0}
+.back{align-self:flex-start;padding-left:4px}
+.bcard{appearance:none;text-align:left;display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--code-bg);cursor:pointer;font:inherit;color:inherit}
+.bcard:hover{border-color:var(--accent)}
+.bcard strong{font:600 18px/1.2 var(--f-disp)}
+.mono{font-family:var(--f-mono);font-size:12.5px;color:var(--muted)}
+.chipline{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.chipline i{font-style:normal;font:500 11.5px/1 var(--f-mono);padding:4px 7px;border-radius:5px;background:var(--surface-2);color:var(--fg)}
+.dls{display:flex;flex-direction:column;gap:6px}
+.dl{display:inline-flex;align-items:center;gap:7px;color:var(--accent);font-size:13px;font-weight:500;text-decoration:none;overflow-wrap:anywhere}
+.dl:hover{text-decoration:underline}
+.dl svg{flex:none}
+.plist{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.plist li{border-bottom:1px solid var(--line)}
+.plist button{appearance:none;width:100%;display:flex;align-items:center;gap:10px;padding:9px 4px;background:none;border:0;text-align:left;cursor:pointer;font:inherit;color:inherit}
+.plist button:hover{background:var(--surface-2)}
+.plist button > span:first-child{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.plist strong{font-size:13.5px;font-weight:600}
+.plist small{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.plist .cur{background:var(--accent-weak)}
+.plist .empty{border:0;padding:10px 4px;text-align:left}
+.go{color:var(--muted);font-size:18px;line-height:1}
+.grade{flex:none;font:600 11px/1 var(--f-body);padding:4px 7px;border-radius:999px;white-space:nowrap}
+.grade.g1{background:var(--surface-2);color:var(--muted)}
+.grade.g2{background:var(--info-bg);color:var(--info)}
+.grade.g3{background:var(--ok-bg);color:var(--ok)}
+.up{color:var(--ok);font-weight:600}
+.ptitle{font:600 18px/1.3 var(--f-disp);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.specs{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;margin:0;font-size:13px}
+.specs dt{color:var(--muted)}
+.specs dd{margin:0;overflow-wrap:anywhere}
+.addgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
+.addgrid .btn{justify-content:flex-start}
+.search{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--code-bg);color:var(--fg);font:500 14px/1.2 var(--f-body)}
+.search:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.seriesf .chip{cursor:pointer;background:var(--surface)}
+.seriesf .chip.hi{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.bgroup{display:flex;flex-direction:column;gap:6px}
+.ctl{display:grid;grid-template-columns:auto minmax(0,1fr) 64px;align-items:center;gap:10px;font-size:13px;color:var(--muted)}
+.ctl input{width:100%;accent-color:var(--accent)}
+.ctl output{font:600 12.5px/1 var(--f-mono);color:var(--fg);text-align:right;font-variant-numeric:tabular-nums}
+.live{font-size:13px;font-weight:500;padding:8px 10px;border-radius:8px;background:var(--surface-2)}
+.live:empty{display:none}
+#holdBtn{touch-action:none;user-select:none;-webkit-user-select:none}
+@media (pointer:coarse){ .search{font-size:16px} }

@@ -4,7 +4,10 @@ import { API_NAMES, BUILTIN_FNS } from './hal.js';
 /* ================= 編譯器（C/HAL → 模擬執行） ================= */
 export const TYPES = 'void|int|char|short|long|float|double|bool|_Bool|uint8_t|uint16_t|uint32_t|uint64_t|int8_t|int16_t|int32_t|int64_t|size_t|HAL_StatusTypeDef|GPIO_PinState';
 export const TYPESET = new Set(TYPES.split('|').concat(['unsigned', 'signed', 'static', 'const', 'volatile']));
-export const ASYNC_BUILTIN = ['HAL_Delay', 'HAL_I2C_Mem_Read', 'HAL_I2C_IsDeviceReady'];
+export const ASYNC_BUILTIN = ['HAL_Delay', 'HAL_I2C_Mem_Read', 'HAL_I2C_Mem_Write', 'HAL_I2C_Master_Transmit', 'HAL_I2C_Master_Receive', 'HAL_I2C_IsDeviceReady'];
+const CAST_FN = { uint8_t:'__u8', int8_t:'__i8', char:'__i8', uint16_t:'__u16', int16_t:'__i16', short:'__i16', uint32_t:'__u32', int32_t:'__i32', int:'__i32', long:'__i32', size_t:'__u32', unsigned:'__u32' };
+const CAST_RE = 'unsigned\\s+int|unsigned\\s+long|unsigned|signed\\s+int|uint8_t|int8_t|uint16_t|int16_t|uint32_t|int32_t|int|long|short|char|size_t';
+const castFn = t => CAST_FN[t.replace(/^signed\s+/, '').replace(/^unsigned\s+(int|long)$/, 'unsigned')] || '';
 export const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
 
 export function stripCode(src, keepStrings){
@@ -70,10 +73,10 @@ export function compile(src){
     if (protos.has(n)) diag.push({ sev:'error', link:true, msg:`undefined reference to \`${n}'（只有宣告，沒有定義）` });
     else D(p.line, p.col, `implicit declaration of function '${n}'；模擬器不支援這個函式`);
   }
-  const idRe = /\b(GPIO_PIN_(\d+)|GPIO([A-Z])\b|(?:hi2c|huart|hspi|htim)\d+)/g;
+  const idRe = /\b(GPIO_PIN_(\d+)|GPIO([A-Z])\b|(?:hi2c|huart|hlpuart|hspi|htim|hadc)\d+)/g, known = new Set(API_NAMES);
   while ((m = idRe.exec(bare))){
-    const bad = (m[2] && +m[2] > 15) || (m[3] && m[3] > 'K') || (/^h/.test(m[1]) && !['hi2c1', 'huart3'].includes(m[1]));
-    if (bad){ const p = posOf(bare, m.index); D(p.line, p.col, `'${m[1]}' undeclared (first use in this function)` + (/^h/.test(m[1]) ? '；本板只啟用 hi2c1 與 huart3' : '')); }
+    const bad = (m[2] && +m[2] > 15) || (m[3] && m[3] > 'K') || (/^h/.test(m[1]) && !known.has(m[1]));
+    if (bad){ const p = posOf(bare, m.index); D(p.line, p.col, `'${m[1]}' undeclared (first use in this function)` + (/^h/.test(m[1]) ? '；模擬器支援 hi2c1–3、huart1–3、hlpuart1、hadc1' : '')); }
   }
   if (!userFns.has('main')) diag.push({ sev:'error', link:true, msg:"undefined reference to `main'" });
   if (/while\s*\(\s*1\s*\)/.test(bare) && !/HAL_Delay|HAL_GetTick/.test(bare)) diag.push({ sev:'warning', line:null, msg:'主迴圈沒有 HAL_Delay，序列埠輸出會非常密集' });
@@ -104,6 +107,9 @@ export function transpile(s, userFns){
     (x, name, size, init) => `let ${name} = __arr(${size || 0}, ${init ? (init[0] === '{' ? '[' + init.slice(1, -1) + ']' : init) : 'null'});`);
   s = s.replace(new RegExp(String.raw`\b(?:static\s+|volatile\s+|const\s+|register\s+)*(?:unsigned\s+|signed\s+)?(?:${TYPES})(?:\s*\*\s*|\s+)(?=[A-Za-z_])`, 'g'), 'let ');
   s = s.replace(/\blet\s+([A-Za-z_]\w*)\s*;/g, 'let $1 = 0;');
+  // 整數型別轉換保留截斷效果：(int16_t)(x) → __i16(x)、(uint8_t)a[i] → __u8(a[i])；其他轉換（float、指標）直接移除
+  s = s.replace(new RegExp(String.raw`\(\s*(?:const\s+)?(${CAST_RE})\s*\)\s*(?=\()`, 'g'), (x, t) => castFn(t) || x);
+  s = s.replace(new RegExp(String.raw`\(\s*(?:const\s+)?(${CAST_RE})\s*\)\s*([A-Za-z_]\w*(?:\s*\[[^\]]*\])*)(?!\s*[\w(])`, 'g'), (x, t, e) => castFn(t) ? `${castFn(t)}(${e})` : x);
   s = s.replace(new RegExp(String.raw`\(\s*(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:${TYPES})\s*\**\s*\)`, 'g'), '');
   s = s.replace(/\b(0[xX][0-9a-fA-F]+|\d+)[uUlL]+\b/g, '$1');
   s = s.replace(/\b(\d+\.\d*|\d+\.?\d*[eE][-+]?\d+)[fF]\b/g, '$1');

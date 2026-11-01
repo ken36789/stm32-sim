@@ -4,7 +4,8 @@ import { flashState } from './state.js';
 import { codeValue, log, logClear, markGutter } from './editor.js';
 import { setRun, updatePills, updateButtons } from './status.js';
 import { compile } from '../core/compiler.js';
-import { SIM, powered } from '../core/sim.js';
+import { SIM, powered, bench } from '../core/sim.js';
+import { fmtKB } from '../core/boards.js';
 import { startProgram, stopProgram } from '../core/runtime.js';
 
 /* ================= 建置與燒錄 ================= */
@@ -43,11 +44,12 @@ export async function flash(){
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const lost = () => !SIM.usb || !powered();
   try {
-    log('ST-LINK SN  : 0027003A3331510B33323639\nST-LINK FW  : V3J15M6\nSWD 頻率    : 24000 kHz\nTarget 電壓 : 3.29 V', 'ld'); await wait(380);
-    log('Device ID   : 0x450\nDevice name : STM32H74x/H75x\nFlash size  : 2 MBytes\nDevice CPU  : Cortex-M7', 'ld'); await wait(320);
+    const b = bench.board, v3 = /V3/.test(b.prog);
+    log(`燒錄器      : ${b.prog}\nST-LINK FW  : ${v3 ? 'V3J15M6' : 'V2J45M31'}\nSWD 頻率    : ${v3 ? '24000' : '4000'} kHz\nTarget 電壓 : 3.29 V`, 'ld'); await wait(380);
+    log(`Device ID   : ${b.devId}\nDevice name : ${b.mcu.slice(0, 9)}xx\nFlash size  : ${fmtKB(b.flash)}\nDevice CPU  : ${b.core}`, 'ld'); await wait(320);
     if (lost()) throw new Error('lost');
     log('開啟 build/firmware.elf ……'); await wait(180);
-    log('抹除 Bank 1 Sector 0（128 KB）……'); await wait(520);
+    log(`抹除 ${b.mcu} 的 Flash 起始區塊……`); await wait(520);
     SIM.flashed = null; updatePills();
     const total = res.size.text + res.size.data, prog = $('#prog'), bar = $('#progBar'); prog.hidden = false;
     for (let p = 0; p <= 100; p += 4){

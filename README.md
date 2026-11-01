@@ -1,25 +1,47 @@
-# STM32H7 接線實驗台
-
-在瀏覽器裡模擬 STM32H743ZI 開發板：用 3D 畫面接杜邦線、自動檢測接線錯誤，並把自己寫的 C/HAL 程式「編譯、燒錄」到開發板上執行。
+# STM32 接線實驗台
 
 線上版：https://ken36789.github.io/stm32-sim/
 
-這是純前端的靜態網站，不需要後端伺服器或資料庫。建置後的 `dist/` 資料夾可以放到任何靜態網站主機，所有人都能直接打開使用。
+在瀏覽器裡模擬 STM32 開發板：
+- 用 3D 畫面接杜邦線，並自動檢測接線錯誤。
+- 可以更換開發板與周邊元件，查看 datasheet。
+- 把自己寫的 C/HAL 程式「編譯、燒錄」到開發板上執行。
+
+這是純前端的靜態網站，不需要後端，任何人用瀏覽器（含 iPhone、iPad 的 Safari）打開就能用。
 
 ## 功能
 
-- **3D 接線**：依序點兩個金色腳位就會接上一條杜邦線。點線可以拔除。手機可以改用面板上的下拉選單接線。
+- **37 塊開發板**：
+  - Nucleo-144：H7、H5、F7、F4、F2、L4、U5
+  - Nucleo-64：F4、F3、F1、F0、G4、G0、L4、L1、L0
+  - Nucleo-32：L432KC、G431KB、F303K8、F042K6
+  - 其他：Blue Pill、Black Pill（F411CE／F401CC）、STM32F407G-DISC1
+- **開發板資料**：
+  - 每塊板子有 30–40 腳的排針，Nucleo 使用 Arduino 相容的 A0–A5、D0–D15 腳位名稱。
+  - 各板的板載 LED、使用者按鈕、I2C、ADC 與虛擬序列埠腳位都依照官方使用手冊設定。
+- **8 種外接模組、24 種型號**：
+  - 模組：LED、RGB LED、按鈕、PIR 人體感應、類比輸入（電位器／光敏電阻）、I2C 溫度感測器、蜂鳴器、繼電器。
+  - 每種都可以更換型號，並標示「入門／進階／高階」與升級理由。
+  - 工作台最多 8 個模組。
+- **電源軌**：+ 與 − 各 10 孔，方便多個模組共用 3V3 與 GND。
+- **元件資訊與 datasheet**：
+  - 點 3D 畫面上的 MCU、ST-LINK、穩壓器或任何模組，會在「元件」分頁顯示規格、datasheet 與產品頁連結。
+  - 也可以在那裡更換開發板或元件型號。
+- **溫度感測器依各型號的 datasheet 模擬暫存器**：
+  - BMP280／BME280 用晶片 ID 加 32 位元補償公式。
+  - SHT31、AHT20 用指令加 CRC-8。
+  - TMP102、LM75A、MCP9808、HDC1080 用各自的資料格式。
+  - 不同型號的精度不同，換成高階型號讀值會更接近實際溫度。
 - **接線檢測**：
-  - 檢查短路、電源電壓錯誤、I2C 腳位錯誤、SCL/SDA 接反，以及 PD8/PD9（虛擬序列埠）被占用。
-  - 對照程式實際控制的 GPIO，找出接線與程式不一致的地方。
-- **編譯**：
-  - 用 gcc 的格式回報錯誤（含行號與 `^` 指示）。
-  - 會檢查缺少分號、括號不成對、不存在的腳位，以及模擬器不支援的函式。
-- **燒錄**：模擬 ST-LINK 的連線、抹除、寫入與驗證流程。燒錄中拔掉 USB，Flash 內容會變成不完整。
-- **執行**：
-  - 板載 LD1（PB0）、LD2（PE1）、LD3（PB14），以及外接 LED 會依程式亮滅。
-  - 可以按 B1 USER、B2 RESET 和外接按鈕。printf 會輸出到序列埠視窗。
-- **電氣保護**：短路時會觸發 USB 過電流保護而斷電；感測器接到 5V 會燒毀，需要在「檢測」分頁更換。
+  - 短路、電壓錯誤（例如 5 V 接到 3.6 V 的感測器、HC-SR501 接 3.3 V）。
+  - SCL／SDA 接反、類比模組接到非 ADC 腳、I2C 位址衝突。
+  - 虛擬序列埠腳位被占用、與板載 LED 共用腳位。
+  - 會對照程式實際控制的 GPIO。
+- **建議接線與範例程式**：依目前的開發板和模組自動接線，並產生完整的 main.c，包含各感測器的驅動程式。
+- **編譯與燒錄**：
+  - 以 gcc 的格式回報錯誤。
+  - 模擬 ST-LINK 燒錄流程，Device ID 與 Flash 大小依開發板而定。
+  - printf 輸出到序列埠視窗。
 
 ## 開發
 
@@ -27,69 +49,80 @@
 
 ```bash
 npm install
-npm run dev        # 開發伺服器，預設 http://localhost:5173（--host 讓同網段的手機也能連）
-npm test           # 模擬核心測試（不需要瀏覽器）
-npm run lint       # ESLint
-npm run build      # 建置到 dist/
-npm run preview    # 預覽建置結果
-npm run check      # lint + test + build 一次跑完
+npm run dev           # 開發伺服器 http://localhost:5173
+npm test              # 模擬核心測試：37 塊開發板全部跑一遍
+npm run lint
+npm run build         # 建置到 dist/
+npm run build:single  # 合併成單一 HTML（dist-single/index.html）
+npm run check         # lint + test + build
 ```
 
 ## 專案結構
 
 ```
-index.html              頁面骨架（面板、分頁、按鈕）
 src/
-  main.js               進入點：把核心、3D 場景與介面接起來
-  styles.css            樣式與淺色／深色主題色票
-  core/                 模擬核心，不依賴 DOM 或 Three.js，可在 Node 測試
-    board.js            開發板 J1 腳位、外接模組、範例接線
-    sim.js              接線資料、電氣網路、GPIO 讀值、LED、I2C 狀態
+  main.js               進入點：把核心、3D 與介面接起來
+  core/                 模擬核心（不依賴 DOM 或 Three.js，可在 Node 測試）
+    boards.js           開發板資料庫、排針、板上元件與 datasheet 連結
+    parts.js            外接模組與各型號（規格、等級、datasheet）
+    sim.js              工作台狀態、接線、電氣網路、GPIO、ADC、I2C
+    devices.js          I2C 感測器的暫存器／指令模型
     checks.js           接線檢測規則
+    codegen.js          建議接線與範例程式產生器
     compiler.js         C 原始碼檢查與轉譯
-    hal.js              模擬的 HAL 函式庫（GPIO、Delay、I2C、UART、printf）
-    printf.js           printf 格式化
+    hal.js              模擬的 HAL 函式庫
     runtime.js          執行已燒錄的程式
-    default-code.js     預設 main.c
-    hooks.js            核心通知介面的連接點
-  scene/scene.js        3D 開發板、模組、杜邦線
-  ui/                   面板、編輯器、序列埠、建置與燒錄流程
-tests/core.test.js      核心測試
-.github/workflows/      GitHub Pages 自動部署
+  scene/                3D：scene.js（開發板、電源軌、杜邦線）、modules3d.js（模組）
+  ui/                   面板：inspector.js（元件分頁）、editor.js、serial.js、build.js…
+tests/core.test.js
 ```
-
-### 程式是怎麼「執行」的
-
-這不是真的 ARM 編譯器，執行分成兩步：
-
-1. `compiler.js` 先用規則檢查常見錯誤。
-2. 再把 C 程式轉成 async JavaScript：型別換成 `let`，`HAL_Delay` 等耗時函式前加上 `await`，每個迴圈插入讓出點。這樣 `while (1)` 不會卡住瀏覽器，也能隨時停止或重設。
-
-目前支援一般的 C 語法（變數、陣列、`if`、`for`、`while`、函式、`#define`）。指標運算、`struct` 和 `union` 還不支援。
 
 ## 常見擴充
 
-**新增 HAL 函式**：在 `src/core/hal.js` 的 `makeAPI` 裡加一個同名函式。編譯器會自動認得它。如果函式需要等待（例如 SPI 傳輸），再把名稱加進 `compiler.js` 的 `ASYNC_BUILTIN`。
+**新增開發板**：在 `src/core/boards.js` 的 `RAW` 加一列，填入以下欄位：
+- MCU、核心、時脈、Flash、RAM、板型
+- 燒錄器、Device ID、封裝
+- 板載 LED、按鈕、虛擬序列埠
 
-**新增外接模組**（例如蜂鳴器）：
-1. 在 `src/core/board.js` 的 `MODS` 加上模組名稱、腳位和位置。
-2. 在 `src/scene/scene.js` 的 `buildModule` 畫出元件。
-3. 在 `src/core/checks.js` 加上它的接線規則。
-4. 在 `src/main.js` 的 `applyOutputs` 更新它的 3D 狀態。
+板型決定排針配置（`n144`、`n64`、`n32`、`pill`、`disco`）。Nucleo 系列如果 Arduino 腳位和預設不同，用 `pins` 覆寫。
 
-**換成其他開發板**（例如 STM32F4）：目前腳位資料集中在 `board.js`。要支援多塊板子，可以把 `J1`、板載 LED 的腳位和 MCU 資訊做成一個開發板設定物件，再加上選單切換。
+**新增元件型號**：在 `src/core/parts.js` 對應模組的 `variants` 加一筆。I2C 感測器還要在 `devices.js` 加暫存器模型，並在 `codegen.js` 的 `driver()` 加讀取範例。
 
-## 部署（免費）
+**新增模組種類**：依序修改以下檔案：
+1. `parts.js`：定義模組。
+2. `sim.js` 的 `moduleState`：設定電氣行為。
+3. `checks.js`：加入接線規則。
+4. `modules3d.js`：加入 3D 外觀。
+5. `codegen.js`：加入範例程式。
 
-先執行 `npm run build`，產生的 `dist/` 就是完整網站。`vite.config.js` 已設定 `base: './'`，放在網域根目錄或子路徑都能用。
+**新增 HAL 函式**：在 `hal.js` 的 `makeAPI` 加同名函式。會等待的函式要加進 `compiler.js` 的 `ASYNC_BUILTIN`。
 
-- **GitHub Pages**：把專案推到 GitHub，到 Settings → Pages → Source 選「GitHub Actions」。之後每次推送到 `main` 都會自動測試、建置並上線，網址是 `https://<帳號>.github.io/<專案名稱>/`。
-- **Netlify / Cloudflare Pages / Vercel**：連結 GitHub 專案，建置指令填 `npm run build`，輸出資料夾填 `dist`。或直接把 `dist/` 資料夾拖到 Netlify Drop。
+## 程式是怎麼「執行」的
+
+這不是真的 ARM 編譯器：
+1. 先用規則檢查常見錯誤。
+2. 再把 C 程式轉成 async JavaScript：
+   - 型別換成 `let`，整數型別轉換保留截斷效果，例如 `(int16_t)`。
+   - 會等待的 HAL 函式前加 `await`。
+   - 每個迴圈插入讓出點。
+
+一般的 C 語法都能用。指標運算、`struct`、`union` 還不支援。
+
+ADC 是簡化模型：`hadc1` 會讀取第一個接了類比模組的 ADC 腳。
+
+## 部署
+
+推送到 `main` 分支後，GitHub Actions 會自動測試、建置並部署到 GitHub Pages。
+
+## Datasheet 連結
+
+ST 的連結採用官方網址格式：
+- MCU datasheet：`st.com/resource/en/datasheet/<型號>.pdf`
+- MCU 產品頁：`st.com/en/microcontrollers-microprocessors/<型號>.html`
+- 開發板產品頁：`st.com/en/evaluation-tools/<型號>.html`
+
+TI、NXP、Microchip、Bosch、Omron、Bourns 的元件連到原廠 PDF。找不到穩定原廠網址的通用零件（例如 TTP223、HC-SR501）則提供 datasheet 搜尋連結。
 
 ## 資料儲存
 
-使用者的接線、程式碼、目前分頁和主題設定存在瀏覽器的 localStorage，只留在使用者自己的裝置上。網站不收集任何資料。之後若要加入帳號、雲端存檔或付費機制，需要另外加上後端服務。
-
-## 字型
-
-字型從 Google Fonts 載入：Chakra Petch、Noto Sans TC、JetBrains Mono。如果網站要在無法連到 Google 的環境使用，可以改成自行託管字型檔，或直接移除 `index.html` 裡的字型連結。移除後會改用系統字型。
+開發板、模組、接線、程式碼與設定都存在使用者瀏覽器的 localStorage，不會上傳。

@@ -12,4 +12,5 @@ export const hooks = {
   run: noop,            // (狀態) 執行狀態改變：idle/flash/run/halt/fault/done/off/reset
   sensorDamaged: noop,  // (boolean) 感測器損壞狀態
   recheck: noop,        // 重新執行接線檢測
+  benchChanged: noop,   // 開發板或模組變更（需要重建 3D 與面板）
 };
