@@ -20,12 +20,13 @@ export function pinTags(label, mcu, o){
   const t = [];
   if (o.spi){ if (label === o.spi.sck) t.push('sck'); if (label === o.spi.miso) t.push('miso'); if (label === o.spi.mosi) t.push('mosi'); if (label === o.spi.cs) t.push('cs'); }
   if (o.can){ if (label === o.can.tx) t.push('cantx'); if (label === o.can.rx) t.push('canrx'); }
+  if (o.step && o.step.some(x => x.pin === label)) t.push('step');
   return t;
 }
 
 export function makeBoard(o){
   const map = o.pins || {}, counts = {};
-  const labels = extendHeader(o.header, map, [o.vcp[1], o.vcp[2], o.spi?.sck, o.spi?.miso, o.spi?.mosi, o.spi?.cs, o.can?.tx, o.can?.rx]);
+  const labels = extendHeader(o.header, map, [o.vcp[1], o.vcp[2], o.spi?.sck, o.spi?.miso, o.spi?.mosi, o.spi?.cs, o.can?.tx, o.can?.rx, ...(o.step || []).map(x => x.pin)]);
   const header = labels.map(label => {
     const total = labels.filter(x => x === label).length, n = counts[label] = (counts[label] || 0) + 1;
     const kind = label === 'GND' ? 'gnd' : (label === '3V3' || label === '5V') ? 'pwr' : 'gpio';
@@ -50,6 +51,6 @@ export function makeBoard(o){
     vcp:{ periph:o.vcp[0], tx:o.vcp[1], rx:o.vcp[2], handle:o.vcp[3] || null },
     i2c:o.i2c, adcBits:o.adcBits || 12, adcDrv:o.adcDrv, adcInst:o.adcInst, adcCh:o.adcCh ?? 0,
     header, pcb:o.pcb, xtal:o.xtal || null, dbg:o.dbg || null, ldo:o.ldo || null, note:o.note || null, links:o.links,
-    spi:o.spi || null, noSpi:o.noSpi || null, can:o.can || null, noCan:o.noCan || null,
+    spi:o.spi || null, noSpi:o.noSpi || null, can:o.can || null, noCan:o.noCan || null, step:o.step || null, noStep:o.noStep || null,
   };
 }

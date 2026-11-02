@@ -168,9 +168,9 @@ test('TI／NXP 程式沒有控制 LED 所接的腳位時，檢測會警告', () 
 
 test('不支援的 SDK 設定函式只會警告並略過，不會讓編譯失敗', () => {
   setup('mspm0g3507', []);
-  const c = compile(exampleCode().replace('SYSCFG_DL_init();', 'SYSCFG_DL_init();\n  DL_TimerG_startCounter(TIMER_0_INST);'));
+  const c = compile(exampleCode().replace('SYSCFG_DL_init();', 'SYSCFG_DL_init();\n  DL_WWDT_restart(WWDT0_INST);'));
   assert.equal(c.ok, true);
-  assert.match(c.diag.map(d => d.msg).join(), /DL_TimerG_startCounter.*略過/);
+  assert.match(c.diag.map(d => d.msg).join(), /DL_WWDT_restart.*略過/);
 });
 
 /* ---------- 通訊協定與邏輯分析儀 ---------- */
@@ -273,4 +273,84 @@ test('四種分析儀接上後都能解碼，接錯、沒共地、節點關閉�
   nodeOfCan(la('can') || bench.modules.find(m => m.type === 'can')).on = false;
   const t1 = tNow(); await run([/CAN 送出/]);
   assert.ok(analyze(capture(la('la_can'), t1, tNow()), opt).anns.some(a => a.kind === 'cframenack'));
+});
+
+/* ---------- 步進馬達（TB67S128FTG） ---------- */
+import { USTEP, dmodeBits, coilCurrents, motorOf, motorInfo, stepperTick, setDiv, setLoad, startManual, stopManual, jumpLimit } from '../src/core/steppers.js';
+const STEP2 = [{ type:'stepper' }, { type:'stepper' }];
+/** 一邊積分轉子，一邊等 ms 毫秒（模擬每一格畫面呼叫 stepperTick） */
+async function spin(ms){ const t0 = Date.now(); while (Date.now() - t0 < ms){ stepperTick(); await sleep(15); } stepperTick(); }
+
+test('TB67S128FTG：DMODE 編碼與線圈電流（全步方波、微步正弦）', () => {
+  assert.deepEqual(USTEP.map(dmodeBits), ['000', '001', '010', '011', '100', '101', '110', '111']);
+  assert.deepEqual(coilCurrents(0, 1, true), [1, 1]);
+  assert.deepEqual(coilCurrents(1, 1, true), [-1, 1]);
+  const [a, b] = coilCurrents(4, 16, true);                       // 45° + 4 × 90°/16 ＝ 67.5°
+  assert.ok(Math.abs(a - Math.cos(67.5 * Math.PI / 180)) < 1e-9 && Math.abs(b - Math.sin(67.5 * Math.PI / 180)) < 1e-9);
+  assert.deepEqual(coilCurrents(3, 16, false), [0, 0]);
+});
+
+test('有計時器 PWM 的晶片：兩顆步進馬達的建議接線＋範例程式可編譯、檢測無誤；沒有的會說明', () => {
+  let n = 0;
+  for (const b of BOARDS){
+    setup(b.id, b.step ? STEP2 : [{ type:'stepper' }]);
+    if (!b.step){ assert.ok(runChecks(exampleCode()).some(r => r.sev === 'err' && /STEP/.test(r.title)), `${b.id} 應該提示不支援`); assert.equal(compile(exampleCode()).ok, true, b.id); continue; }
+    n++;
+    const c = compile(exampleCode());
+    assert.equal(c.ok, true, `${b.id}: ${JSON.stringify(c.diag)}`);
+    assert.deepEqual(c.diag, [], b.id);
+    assert.deepEqual(problems(runChecks(exampleCode())), [], b.id);
+    assert.match(exampleCode(), /M1_MICROSTEP\s+16/);
+  }
+  assert.ok(n >= 100, `只有 ${n} 種晶片支援步進馬達`);
+});
+
+test('六種 SDK 的計時器 PWM：範例程式讓 M1 加速、來回轉動，沒有失步', async () => {
+  const sdks = [...new Set(BOARDS.map(b => b.sdk))];
+  assert.equal(sdks.length, 6);
+  for (const sdk of sdks){
+    const b = BOARDS.find(x => x.sdk === sdk && x.step);
+    setup(b.id, STEP2);
+    const c = compile(exampleCode()); assert.equal(c.ok, true, b.id);
+    hooks.serial = () => {}; SIM.flashed = { js:c.js, size:c.size.text }; startProgram();
+    const [m1, m2] = bench.modules; let max = 0, peak = 0;
+    const t0 = Date.now(); while (Date.now() - t0 < 1700){ stepperTick(); const i = motorInfo(m1); max = Math.max(max, Math.abs(i.rpm)); peak = Math.max(peak, i.revs); await sleep(15); }
+    stopProgram(true);
+    assert.ok(peak > 1.1, `${b.id}（${sdk}）M1 只轉了 ${peak.toFixed(2)} 圈`);
+    assert.ok(max > 100 && max < 135, `${b.id}（${sdk}）M1 最高 ${max.toFixed(0)} RPM`);
+    assert.equal(motorInfo(m1).stalls, 0, `${b.id} M1 失步`);
+    assert.ok(Math.abs(motorInfo(m2).revs) > .2, `${b.id} M2 沒有轉`);
+  }
+});
+
+test('同樣的 pps：微步從 1/16 改成 1/64，轉速只剩四分之一', async () => {
+  setup('nucleo-f446re', [{ type:'stepper' }]);
+  const m = bench.modules[0]; setLoad(m, 0);
+  startManual(m, { pps:3200, accel:12800, steps:Infinity, ramp:true, dir:1 });   // 1/16：3200 pps ＝ 1 圈／秒
+  await spin(900);
+  assert.ok(Math.abs(motorInfo(m).rpm - 60) < 3, `1/16：${motorInfo(m).rpm}`);
+  setDiv(m, 64); await spin(700);
+  assert.ok(Math.abs(motorInfo(m).rpm - 15) < 2, `1/64：${motorInfo(m).rpm}`);
+  assert.equal(motorInfo(m).lost, 0);
+  stopManual(m);
+});
+
+test('大飛輪：沒有加減速直接跳到 300 RPM 會失步；用加減速就不會', async () => {
+  setup('nucleo-f446re', [{ type:'stepper' }]);
+  const m = bench.modules[0]; setLoad(m, 2); setDiv(m, 16);
+  const per = 3200;
+  assert.ok(jumpLimit(m) < 5, `跳躍上限 ${jumpLimit(m)} 圈／秒`);
+  startManual(m, { pps:5 * per, accel:1, steps:Infinity, ramp:false, dir:1 });
+  await spin(600);
+  assert.ok(motorInfo(m).stalls > 0 && motorInfo(m).lost !== 0, '應該失步');
+  stopManual(m);
+  // 重新開始：同一顆馬達，1 圈／秒、加速度 2 圈／秒²、走 1 圈
+  setup('nucleo-f446re', [{ type:'stepper' }]);
+  const m2 = bench.modules[0]; setLoad(m2, 2); setDiv(m2, 16); stepperTick();
+  startManual(m2, { pps:per, accel:2 * per, steps:per, ramp:true, dir:1 });
+  await spin(1800);
+  const i = motorInfo(m2);
+  assert.equal(i.stalls, 0); assert.equal(i.lost, 0);
+  assert.ok(Math.abs(i.revs - 1) < .02, `走了 ${i.revs} 圈`);
+  assert.equal(motorOf(m2).manual.done, true);
 });

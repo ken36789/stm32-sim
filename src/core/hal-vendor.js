@@ -2,12 +2,13 @@
 // 只實作常用的 GPIO、延遲、I2C、ADC 與輸出函式；其他同前綴的設定函式由編譯器以「略過」處理。
 import { SIM, readPin, adcRead, bench, pinWrite, pinToggle } from './sim.js';
 import { i2cWrite, i2cRead, i2cPrefetch, i2cTraceRead, spiTransfer, CAN, canSend, canPending, canRecv } from './buses.js';
+import { stepIndex, stepIndexes, pwmSet, pwmRun } from './steppers.js';
 
 /** ctx：{ chk, sleep, outputs, print } */
 export function vendorAPI(ctx){
-  const { chk, sleep, outputs, print } = ctx;
+  const { chk, outputs, print, waitMs } = ctx;
   const clk = () => bench.board.mhz * 1e6;
-  const wait = async sec => { chk(); const end = performance.now() + sec * 1000; do { await sleep(Math.max(0, Math.min(end - performance.now(), 100))); chk(); } while (performance.now() < end); };
+  const wait = sec => waitMs(sec * 1000);
   const write = (pin, v) => pinWrite(pin, v);
   const toggle = pin => pinToggle(pin);
   const read = pin => { if (!SIM.mode[pin]){ SIM.mode[pin] = 'in'; outputs(); } return readPin(pin); };
@@ -232,6 +233,62 @@ export function vendorAPI(ctx){
     kFLEXCAN_FrameFormatStandard:0, kFLEXCAN_FrameFormatExtend:1, kFLEXCAN_FrameTypeData:0, kFLEXCAN_FrameTypeRemote:1,
     CAN0:{ name:'CAN0' }, CAN1:{ name:'CAN1' }, CAN2:{ name:'CAN2' }, CAN3:{ name:'CAN3' },
   });
+  /* ---- 計時器 PWM（步進馬達的 STEP 脈波） ---- */
+  const T = {}, tOf = o => T[o?.name] || (T[o?.name] = { load:999, period:999, en:{}, out:{} });
+  const each = (o, fn) => stepIndexes(o?.name).forEach(fn);
+  // MSPM0：SysConfig 把 PWM_0／PWM_1 的時脈設成 1 MHz
+  for (const P of ['DL_TimerG', 'DL_TimerA']) Object.assign(api, {
+    [`${P}_setLoadValue`]:(o, v) => { chk(); tOf(o).load = Number(v) >>> 0; each(o, k => pwmSet(k, 1e6 / (tOf(o).load + 1))); },
+    [`${P}_startCounter`]:o => { chk(); each(o, k => { pwmSet(k, 1e6 / (tOf(o).load + 1)); pwmRun(k, true); }); },
+    [`${P}_stopCounter`]:o => { chk(); each(o, k => pwmRun(k, false)); },
+    [`${P}_setCaptureCompareValue`]:() => chk(),
+  });
+  Object.assign(api, { PWM_0_INST:{ name:'PWM_0' }, PWM_1_INST:{ name:'PWM_1' }, DL_TIMER_CC_0_INDEX:0, DL_TIMER_CC_1_INDEX:1 });
+  // MSP430：Timer_A／Timer_B，SMCLK 1 MHz，頻率 = 1 MHz ÷ timerPeriod
+  for (const P of ['Timer_A', 'Timer_B']){
+    const U = P.toUpperCase();
+    Object.assign(api, {
+      [`${P}_outputPWM`]:(base, p) => { chk(); if (!p) return; const per = Number(p.timerPeriod) || 0, cr = ((Number(p.compareRegister) || 2) - 2) / 2, k = stepIndex(base?.name, cr); if (k >= 0){ pwmSet(k, per > 0 ? 1e6 / per : 0); pwmRun(k, per > 0); } },
+      [`${P}_stop`]:base => { chk(); each(base, k => pwmRun(k, false)); },
+      [`${U}_CLOCKSOURCE_SMCLK`]:0x0200, [`${U}_CLOCKSOURCE_DIVIDER_1`]:1, [`${U}_OUTPUTMODE_RESET_SET`]:0xE0,
+    });
+    for (let r = 0; r <= 6; r++) api[`${U}_CAPTURECOMPARE_REGISTER_${r}`] = 2 + 2 * r;
+    for (let n = 0; n <= 3; n++) api[`${U}${n}_BASE`] = { name:`${U}${n}` };
+  }
+  // TivaWare：PWM 時脈 = 系統時脈 ÷ 64
+  const gen = g => ((Number(g) >>> 0) >> 6) - 1, pclk = () => clk() / 64;
+  const pwApply = o => { const t = tOf(o); each(o, k => { const st = bench.board.step[k], g = t.en[st.ch]; pwmSet(k, (t[`p${st.ch}`] || 0) > 0 ? pclk() / t[`p${st.ch}`] : 0); pwmRun(k, !!g && !!t.out[st.out]); }); };
+  Object.assign(api, {
+    PWMGenPeriodSet:(o, g, p) => { chk(); tOf(o)[`p${gen(g)}`] = Number(p) >>> 0; pwApply(o); },
+    PWMGenEnable:(o, g) => { chk(); tOf(o).en[gen(g)] = true; pwApply(o); }, PWMGenDisable:(o, g) => { chk(); tOf(o).en[gen(g)] = false; pwApply(o); },
+    PWMOutputState:(o, bits, on) => { chk(); for (let b = 0; b < 8; b++) if ((Number(bits) >>> 0) & (1 << b)) tOf(o).out[b] = !!on; pwApply(o); },
+    PWM0_BASE:{ name:'PWM0' }, PWM1_BASE:{ name:'PWM1' },
+  });
+  for (let g = 0; g < 4; g++){ api['PWM_GEN_' + g] = 0x40 * (g + 1); api['PWM_OUT_' + (2 * g)] = 0x40 * (g + 1); api['PWM_OUT_' + (2 * g + 1)] = 0x40 * (g + 1) + 1; }
+  for (let b = 0; b < 8; b++) api[`PWM_OUT_${b}_BIT`] = 1 << b;
+  // C2000 ePWM：TBCLK 1.25 MHz（EPWMCLK ÷ 8 ÷ 10 或 ÷ 8 ÷ 12），頻率 = TBCLK ÷ (TBPRD + 1)
+  Object.assign(api, {
+    EPWM_setTimeBasePeriod:(o, p) => { chk(); tOf(o).period = Number(p) >>> 0; each(o, k => pwmSet(k, 1.25e6 / (tOf(o).period + 1))); },
+    EPWM_setTimeBaseCounterMode:(o, m) => { chk(); each(o, k => { pwmSet(k, 1.25e6 / (tOf(o).period + 1)); pwmRun(k, m !== 3); }); },
+    EPWM_COUNTER_MODE_UP:0, EPWM_COUNTER_MODE_DOWN:1, EPWM_COUNTER_MODE_UP_DOWN:2, EPWM_COUNTER_MODE_STOP_FREEZE:3, EPWM_COUNTER_COMPARE_A:0, EPWM_COUNTER_COMPARE_B:2,
+  });
+  for (let n = 1; n <= 8; n++) api[`EPWM${n}_BASE`] = { name:`EPWM${n}` };
+  // NXP：FTM、TPM、CTIMER、QTMR 都直接給頻率（Hz）
+  const setup = (base, ch, f) => { const k = stepIndex(base?.name, Number(ch)); if (k >= 0) pwmSet(k, Number(f) || 0); };
+  Object.assign(api, {
+    FTM_SetupPwm:(b, p, n, mode, f) => { chk(); (Array.isArray(p) ? p : [p]).slice(0, Math.max(1, n | 0)).forEach(x => setup(b, x?.chnlNumber, f)); return 0; },
+    FTM_StartTimer:b => { chk(); each(b, k => pwmRun(k, true)); }, FTM_StopTimer:b => { chk(); each(b, k => pwmRun(k, false)); },
+    TPM_SetupPwm:(b, p, n, mode, f) => { chk(); (Array.isArray(p) ? p : [p]).slice(0, Math.max(1, n | 0)).forEach(x => setup(b, x?.chnlNumber, f)); return 0; },
+    TPM_StartTimer:b => { chk(); each(b, k => pwmRun(k, true)); }, TPM_StopTimer:b => { chk(); each(b, k => pwmRun(k, false)); },
+    CTIMER_SetupPwm:(...a) => { chk(); const seven = a.length >= 7; setup(a[0], seven ? a[2] : a[1], seven ? a[4] : a[3]); return 0; },
+    CTIMER_StartTimer:b => { chk(); each(b, k => pwmRun(k, true)); }, CTIMER_StopTimer:b => { chk(); each(b, k => pwmRun(k, false)); },
+    QTMR_SetupPwm:(b, ch, f) => { chk(); setup(b, ch, f); return 0; },
+    QTMR_StartTimer:(b, ch) => { chk(); const k = stepIndex(b?.name, Number(ch)); if (k >= 0) pwmRun(k, true); }, QTMR_StopTimer:(b, ch) => { chk(); const k = stepIndex(b?.name, Number(ch)); if (k >= 0) pwmRun(k, false); },
+    kFTM_HighTrue:1, kFTM_EdgeAlignedPwm:0, kFTM_SystemClock:1, kTPM_HighTrue:1, kTPM_EdgeAlignedPwm:0, kTPM_SystemClock:1, kQTMR_PriSrcRiseEdge:0,
+  });
+  for (let n = 0; n < 8; n++){ api['kFTM_Chnl_' + n] = n; api['kTPM_Chnl_' + n] = n; }
+  for (let n = 0; n < 4; n++){ api['kCTIMER_Match_' + n] = n; api['kQTMR_Channel_' + n] = n; api['FTM' + n] = { name:'FTM' + n }; api['TPM' + n] = { name:'TPM' + n }; api['TMR' + (n + 1)] = { name:'TMR' + (n + 1) }; }
+  for (let n = 0; n < 5; n++) api['CTIMER' + n] = { name:'CTIMER' + n };
   // 範例程式會呼叫的初始化與設定函式（模擬器中不需要動作）
   for (const f of NOOPS) if (!(f in api)) api[f] = () => { chk(); return 0; };
   return api;
@@ -245,7 +302,9 @@ const NOOPS = ['SYSCFG_DL_init', 'WDT_A_hold', 'PMM_unlockLPM5', 'GPIO_setAsOutp
   'ADC16_SetChannelConfig', 'LPADC_DoSoftwareTrigger', 'ADC_DoSoftwareTriggerConvSeqA', 'ADC_SetChannelConfig', 'DL_ADC12_enableConversions', 'CLOCK_EnableClock', 'PORT_SetPinMux', 'IOMUXC_SetPinMux',
   'GPIO_setAsPeripheralModuleFunctionOutputPin', 'EUSCI_A_SPI_initMaster', 'EUSCI_A_SPI_enable', 'EUSCI_B_SPI_initMaster', 'EUSCI_B_SPI_enable', 'USCI_A_SPI_initMaster', 'USCI_A_SPI_enable', 'USCI_B_SPI_initMaster', 'USCI_B_SPI_enable',
   'GPIOPinTypeSSI', 'SSIConfigSetExpClk', 'SSIEnable', 'GPIOPinTypeCAN', 'SPI_disableModule', 'SPI_enableModule', 'SPI_setConfig', 'SPI_disableFIFO', 'SPI_disableLoopback',
-  'DSPI_MasterGetDefaultConfig', 'DSPI_MasterInit', 'LPSPI_MasterGetDefaultConfig', 'LPSPI_MasterInit', 'SPI_MasterGetDefaultConfig', 'SPI_MasterInit'];
+  'DSPI_MasterGetDefaultConfig', 'DSPI_MasterInit', 'LPSPI_MasterGetDefaultConfig', 'LPSPI_MasterInit', 'SPI_MasterGetDefaultConfig', 'SPI_MasterInit',
+  'SysCtlPWMClockSet', 'PWMClockSet', 'GPIOPinTypePWM', 'PWMGenConfigure', 'PWMPulseWidthSet', 'EPWM_setClockPrescaler', 'EPWM_setCounterCompareValue', 'EPWM_setActionQualifierAction', 'EPWM_setTimeBaseCounter',
+  'EPWM_disablePhaseShiftLoad', 'SysCtl_disablePeripheral', 'SysCtl_enablePeripheral', 'FTM_GetDefaultConfig', 'FTM_Init', 'TPM_GetDefaultConfig', 'TPM_Init', 'CTIMER_GetDefaultConfig', 'CTIMER_Init', 'QTMR_GetDefaultConfig', 'QTMR_Init'];
 
 /** 這些前綴的函式若模擬器沒有實作，編譯時給警告，執行時略過並回傳 0 */
-export const VENDOR_PREFIX = /^(DL_|SYSCFG_|SSI|CAN|FLEXCAN_|DSPI_|LPSPI_|MCAN_|GPIO_|WDT_|PMM_|CS_|EUSCI_|USCI_|ADC|SysCtl|GPIOPin|IntMaster|I2C|UART|Device_|Interrupt_|SCI_|CLOCK_|BOARD_|PORT_|IOMUXC_|LPI2C_|LPADC_|SDK_|SysTick|NVIC_|Board_|Timer|PWM|SPI_|FLEXCOMM|POWER_|RESET_|CTIMER_|INPUTMUX_|SYSCON_|LPUART_|USART_|EPWM_|CPUTimer_|XBAR_|DMA_|ECAP_|EQEP_|CMPSS_|DAC_)/;
+export const VENDOR_PREFIX = /^(DL_|SYSCFG_|SSI|CAN|FLEXCAN_|DSPI_|LPSPI_|MCAN_|Timer_|FTM_|TPM_|QTMR_|SysCtl_|GPIO_|WDT_|PMM_|CS_|EUSCI_|USCI_|ADC|SysCtl|GPIOPin|IntMaster|I2C|UART|Device_|Interrupt_|SCI_|CLOCK_|BOARD_|PORT_|IOMUXC_|LPI2C_|LPADC_|SDK_|SysTick|NVIC_|Board_|Timer|PWM|SPI_|FLEXCOMM|POWER_|RESET_|CTIMER_|INPUTMUX_|SYSCON_|LPUART_|USART_|EPWM_|CPUTimer_|XBAR_|DMA_|ECAP_|EQEP_|CMPSS_|DAC_)/;

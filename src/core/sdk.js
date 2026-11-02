@@ -27,6 +27,16 @@ static int I2C_Read(uint8_t addr, uint8_t *buf, int len)
 {
   HAL_SPI_TransmitReceive(&h${b.spi.inst.toLowerCase()}, tx, rx, len, 100);
 }` }),
+  step:(b, k, nm) => { const st = b.step[k], h = `htim${st.inst.slice(3)}`, ch = `TIM_CHANNEL_${st.ch}`; return {
+    init:[`MX_${st.inst}_Init();                  // ${st.inst}：預除頻到 1 MHz，CH${st.ch} → ${nm} 的 STEP（${st.pin}）`],
+    fn:`static void ${nm}_SetPps(uint32_t pps)
+{
+  if (pps < 16) { HAL_TIM_PWM_Stop(&${h}, ${ch}); return; }   // 太慢（16 位元計時器的下限）就停止輸出
+  uint32_t arr = 1000000 / pps - 1;                // 計時器時脈 1 MHz：頻率 = 1 MHz ÷ (ARR + 1)
+  __HAL_TIM_SET_AUTORELOAD(&${h}, arr);
+  __HAL_TIM_SET_COMPARE(&${h}, ${ch}, arr / 2);     // 50% 責任週期
+  HAL_TIM_PWM_Start(&${h}, ${ch});
+}` }; },
   can:b => {
     const H = b.can.handle;
     if (b.can.drv === 'fdcan') return {
@@ -90,6 +100,15 @@ static void SPI_Xfer(uint8_t *tx, uint8_t *rx, int len)
     rx[i] = DL_SPI_receiveDataBlocking8(SPI_0_INST);
   }
 }` }),
+  step:(b, k, nm) => { const I = `${b.step[k].inst}_INST`; return { init:[], fn:`// ${I} 由 SysConfig 設定：計時器時脈 1 MHz、PWM 輸出 → ${nm} 的 STEP（${b.step[k].pin}）
+static void ${nm}_SetPps(uint32_t pps)
+{
+  if (pps < 16) { DL_TimerG_stopCounter(${I}); return; }
+  uint32_t load = 1000000 / pps - 1;               // 頻率 = 1 MHz ÷ (LOAD + 1)
+  DL_TimerG_setLoadValue(${I}, load);
+  DL_TimerG_setCaptureCompareValue(${I}, load / 2, DL_TIMER_CC_0_INDEX);
+  DL_TimerG_startCounter(${I});
+}` }; },
   can:() => ({
     globals:['DL_MCAN_TxBufElement canTx;', 'DL_MCAN_RxBufElement canRx;', 'DL_MCAN_RxFIFOStatus canFifo;'],
     init:['// CANFD0 由 SysConfig 設定成傳統 CAN 500 kbps', 'canTx.id = ((uint32_t)CAN_TX_ID) << 18U;     // 標準 ID 放在 bit 28..18', 'canTx.rtr = 0U;', 'canTx.xtd = 0U;', 'canTx.esi = 0U;', 'canTx.dlc = 4U;', 'canTx.brs = 0U;', 'canTx.fdf = 0U;                         // 傳統 CAN，不是 CAN FD', 'canTx.efc = 0U;', 'canTx.mm = 0U;', 'canFifo.num = DL_MCAN_RX_FIFO_NUM_0;'],
@@ -159,11 +178,26 @@ static int I2C_Read(uint8_t addr, uint8_t *buf, int len)
   }
 }` };
   },
+  step:(b, k, nm) => { const st = b.step[k], P = st.drv, U = P.toUpperCase(), [port, bit] = st.pin.slice(1).split('.'); return {
+    init:[`GPIO_setAsPeripheralModuleFunctionOutputPin(GPIO_PORT_P${port}, GPIO_PIN${bit}, GPIO_PRIMARY_MODULE_FUNCTION);   // ${st.pin}＝${st.tim} → ${nm} STEP`],
+    fn:`static void ${nm}_SetPps(uint32_t pps)
+{
+  if (pps < 16) { ${P}_stop(${st.inst}_BASE); return; }   // 16 位元計時器：最低約 16 pps
+  ${P}_outputPWMParam p = {0};
+  p.clockSource = ${U}_CLOCKSOURCE_SMCLK;           // SMCLK 1 MHz
+  p.clockSourceDivider = ${U}_CLOCKSOURCE_DIVIDER_1;
+  p.timerPeriod = 1000000 / pps;                   // 頻率 = 1 MHz ÷ timerPeriod
+  p.compareRegister = ${U}_CAPTURECOMPARE_REGISTER_${st.ch};
+  p.compareOutputMode = ${U}_OUTPUTMODE_RESET_SET;
+  p.dutyCycle = p.timerPeriod / 2;
+  ${P}_outputPWM(${st.inst}_BASE, &p);
+}` }; },
+
 };
 
 const tivaware = {
   name:'TivaWare', print:'UARTprintf', float:false,
-  includes:(b, u = {}) => ['#include <stdint.h>', '#include <stdbool.h>', '#include <stdlib.h>', '#include "inc/hw_memmap.h"', '#include "driverlib/sysctl.h"', '#include "driverlib/gpio.h"', '#include "driverlib/pin_map.h"', '#include "driverlib/i2c.h"', '#include "driverlib/adc.h"', ...(u.spi ? ['#include "driverlib/ssi.h"'] : []), ...(u.can ? ['#include "driverlib/can.h"'] : []), '#include "utils/uartstdio.h"'],
+  includes:(b, u = {}) => ['#include <stdint.h>', '#include <stdbool.h>', '#include <stdlib.h>', '#include "inc/hw_memmap.h"', '#include "driverlib/sysctl.h"', '#include "driverlib/gpio.h"', '#include "driverlib/pin_map.h"', '#include "driverlib/i2c.h"', '#include "driverlib/adc.h"', ...(u.spi ? ['#include "driverlib/ssi.h"'] : []), ...(u.can ? ['#include "driverlib/can.h"'] : []), ...(u.step ? ['#include "driverlib/pwm.h"'] : []), '#include "utils/uartstdio.h"'],
   def:(n, p) => [`#define ${(n + '_PORT').padEnd(14)} GPIO_PORT${p[1]}_BASE`, `#define ${(n + '_PIN').padEnd(14)} GPIO_PIN_${num(p)}`],
   cfgOut:n => [`GPIOPinTypeGPIOOutput(${n}_PORT, ${n}_PIN);`],
   cfgIn:(n, pu) => [`GPIOPinTypeGPIOInput(${n}_PORT, ${n}_PIN);`, ...(pu ? [`GPIOPadConfigSet(${n}_PORT, ${n}_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);`] : [])],
@@ -233,6 +267,18 @@ static int I2C_Read(uint8_t addr, uint8_t *buf, int len)
   }
 }` };
   },
+  step:(b, k, nm) => { const st = b.step[k], G = `PWM_GEN_${st.ch}`, O = `PWM_OUT_${st.out}`, port = st.pin[1]; return {
+    init:[...(k === 0 ? [b.mhz > 80 ? 'PWMClockSet(PWM0_BASE, PWM_SYSCLK_DIV_64);   // PWM 時脈 = 系統時脈 ÷ 64' : 'SysCtlPWMClockSet(SYSCTL_PWMDIV_64);         // PWM 時脈 = 系統時脈 ÷ 64', 'SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);'] : []),
+      `SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIO${port});`, `GPIOPinConfigure(${st.pcfg});`, `GPIOPinTypePWM(GPIO_PORT${port}_BASE, GPIO_PIN_${num(st.pin)});   // ${st.pin}＝${st.tim} → ${nm} STEP`,
+      `PWMGenConfigure(PWM0_BASE, ${G}, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);`, `PWMOutputState(PWM0_BASE, ${O}_BIT, true);`],
+    fn:`static void ${nm}_SetPps(uint32_t pps)
+{
+  if (pps < 20) { PWMGenDisable(PWM0_BASE, ${G}); return; }   // 16 位元計數器的下限
+  uint32_t period = (g_ui32SysClock / 64) / pps;   // 頻率 = PWM 時脈 ÷ period
+  PWMGenPeriodSet(PWM0_BASE, ${G}, period);
+  PWMPulseWidthSet(PWM0_BASE, ${O}, period / 2);
+  PWMGenEnable(PWM0_BASE, ${G});
+}` }; },
   can:b => {
     const I = b.can.inst, port = b.can.tx[1];
     return {
@@ -298,6 +344,17 @@ static int I2C_Read(uint16_t addr, uint16_t *buf, int len)
     rx[i] = SPI_readDataBlockingNonFIFO(${I}_BASE) & 0xFF;  // 收到的資料在低 8 位元
   }
 }` }; },
+  step:(b, k, nm) => { const st = b.step[k], E = `${st.inst}_BASE`; return {
+    init:[`GPIO_setPinConfig(${st.pcfg});         // ${st.pin}＝${st.tim} → ${nm} STEP`, `EPWM_setClockPrescaler(${E}, EPWM_CLOCK_DIVIDER_8, EPWM_HSCLOCK_DIVIDER_${b.mhz === 120 ? 12 : 10});   // TBCLK = 1.25 MHz`,
+      `EPWM_setActionQualifierAction(${E}, EPWM_AQ_OUTPUT_A, EPWM_AQ_OUTPUT_HIGH, EPWM_AQ_OUTPUT_ON_TIMEBASE_ZERO);`, `EPWM_setActionQualifierAction(${E}, EPWM_AQ_OUTPUT_A, EPWM_AQ_OUTPUT_LOW, EPWM_AQ_OUTPUT_ON_TIMEBASE_UP_CMPA);`],
+    fn:`static void ${nm}_SetPps(uint32_t pps)
+{
+  if (pps < 20) { EPWM_setTimeBaseCounterMode(${E}, EPWM_COUNTER_MODE_STOP_FREEZE); return; }   // 16 位元：最低約 19 pps
+  uint16_t period = 1250000 / pps - 1;             // 頻率 = TBCLK ÷ (TBPRD + 1)
+  EPWM_setTimeBasePeriod(${E}, period);
+  EPWM_setCounterCompareValue(${E}, EPWM_COUNTER_COMPARE_A, period / 2);
+  EPWM_setTimeBaseCounterMode(${E}, EPWM_COUNTER_MODE_UP);
+}` }; },
   can:b => { const I = b.can.inst; return {
     globals:['uint16_t canTxData[8];', 'uint16_t canRxData[8];'],
     init:[...b.can.pcfg.map(c => `GPIO_setPinConfig(${c});`), `CAN_initModule(${I}_BASE);`, `CAN_setBitRate(${I}_BASE, DEVICE_SYSCLK_FREQ, 500000, 16);`,
@@ -320,7 +377,7 @@ const mcux = b => {
   const recv = lp ? `LPI2C_MasterReceive(${I}, buf, len)` : `I2C_MasterReadBlocking(${I}, buf, len, kI2C_TransferDefaultFlag)`;
   return {
     name:'MCUXpresso SDK', print:'PRINTF', float:false,
-    includes:(bb, u = {}) => ['#include "fsl_device_registers.h"', '#include "fsl_debug_console.h"', '#include "fsl_gpio.h"', `#include "${lp ? 'fsl_lpi2c.h' : 'fsl_i2c.h'}"`, ...(u.spi && b.spi ? [`#include "fsl_${b.spi.drv}.h"`] : []), ...(u.can ? ['#include "fsl_flexcan.h"'] : []), `#include "${{ adc16:'fsl_adc16.h', lpadc:'fsl_lpadc.h', lpcadc:'fsl_adc.h', rtadc:'fsl_adc.h' }[b.adcDrv]}"`, '#include "pin_mux.h"', '#include "clock_config.h"', '#include "board.h"', '#include <stdlib.h>'],
+    includes:(bb, u = {}) => ['#include "fsl_device_registers.h"', '#include "fsl_debug_console.h"', '#include "fsl_gpio.h"', `#include "${lp ? 'fsl_lpi2c.h' : 'fsl_i2c.h'}"`, ...(u.spi && b.spi ? [`#include "fsl_${b.spi.drv}.h"`] : []), ...(u.can ? ['#include "fsl_flexcan.h"'] : []), ...(u.step && b.step ? [...new Set(b.step.map(x => `#include "fsl_${x.drv}.h"`))] : []), `#include "${{ adc16:'fsl_adc16.h', lpadc:'fsl_lpadc.h', lpcadc:'fsl_adc.h', rtadc:'fsl_adc.h' }[b.adcDrv]}"`, '#include "pin_mux.h"', '#include "clock_config.h"', '#include "board.h"', '#include <stdlib.h>'],
     def:(n, p) => { const r = nxpRef(b, p); return lpc ? [`#define ${(n + '_PORT').padEnd(14)} ${r.port}U`, `#define ${(n + '_PIN').padEnd(14)} ${r.pin}U`] : [`#define ${(n + '_GPIO').padEnd(14)} ${r.gpio}`, `#define ${(n + '_PIN').padEnd(14)} ${r.pin}U`]; },
     cfgOut:n => [lpc ? `GPIO_PinInit(GPIO, ${n}_PORT, ${n}_PIN, &outConfig);` : `GPIO_PinInit(${n}_GPIO, ${n}_PIN, &outConfig);`],
     cfgIn:n => [lpc ? `GPIO_PinInit(GPIO, ${n}_PORT, ${n}_PIN, &inConfig);` : `GPIO_PinInit(${n}_GPIO, ${n}_PIN, &inConfig);`],
@@ -366,6 +423,29 @@ static int I2C_Read(uint8_t addr, uint8_t *buf, int len)
   xfer.dataSize = len;
   xfer.configFlags = ${T[1]};
   ${T[2]}_MasterTransferBlocking(${I}, &xfer);
+}` };
+    },
+    step:(bb, k, nm) => {
+      const st = b.step[k], I = st.inst, clk = st.drv === 'qtmr' ? 'CLOCK_GetFreq(kCLOCK_IpgClk) / 128' : b.pinStyle === 'kinetis' ? 'CLOCK_GetFreq(kCLOCK_BusClk)' : 'CLOCK_GetFreq(kCLOCK_CoreSysClk)';
+      const head = `// ${st.pin}＝${st.tim}（pin_mux 設定）→ ${nm} 的 STEP；計時器直接設定頻率（Hz）\nstatic void ${nm}_SetPps(uint32_t pps)\n{\n`;
+      if (st.drv === 'ftm' || st.drv === 'tpm'){ const P = st.drv.toUpperCase(), t = `${st.drv}_chnl_pwm_signal_param_t`; return { init:[], fn:`${head}  if (pps < 10) { ${P}_StopTimer(${I}); return; }
+  ${t} p;
+  p.chnlNumber = k${P}_Chnl_${st.ch};
+  p.level = k${P}_HighTrue;
+  p.dutyCyclePercent = 50;
+  ${P}_StopTimer(${I});
+  ${P}_SetupPwm(${I}, &p, 1, k${P}_EdgeAlignedPwm, pps, ${clk});
+  ${P}_StartTimer(${I}, k${P}_SystemClock);
+}` }; }
+      if (st.drv === 'ctimer') return { init:[], fn:`${head}  if (pps < 10) { CTIMER_StopTimer(${I}); return; }
+  CTIMER_StopTimer(${I});
+  CTIMER_SetupPwm(${I}, kCTIMER_Match_3, kCTIMER_Match_${st.ch}, 50, pps, ${clk}, false);   // MAT3 當週期、MAT${st.ch} 輸出
+  CTIMER_StartTimer(${I});
+}` };
+      return { init:[], fn:`${head}  if (pps < 10) { QTMR_StopTimer(${I}, kQTMR_Channel_${st.ch}); return; }
+  QTMR_StopTimer(${I}, kQTMR_Channel_${st.ch});
+  QTMR_SetupPwm(${I}, kQTMR_Channel_${st.ch}, pps, 50, false, ${clk});
+  QTMR_StartTimer(${I}, kQTMR_Channel_${st.ch}, kQTMR_PriSrcRiseEdge);
 }` };
     },
     can:() => { const I = b.can.inst; return {

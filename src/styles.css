@@ -311,5 +311,46 @@ body.la-open .app{visibility:hidden}
   .la-bar select{min-width:0;font-size:16px}
 }
 @media (pointer:coarse){ .la-bar select{font-size:16px} }
+/* 步進馬達示波器 */
+.sm-motors{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.sm-motors .chip{cursor:pointer;background:var(--surface);color:var(--fg)}
+.sm-motors .chip.hi{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.sm-us{display:flex;align-items:center;gap:3px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.sm-us span{margin-right:4px;line-height:1.2}
+.sm-us span small{display:block;font:500 10px/1.2 var(--f-mono);color:var(--muted)}
+.sm-us button{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--fg);border-radius:6px;padding:7px 8px;font:600 12px/1 var(--f-mono);cursor:pointer;min-width:40px}
+.sm-us button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.sm-left{display:grid;grid-template-rows:minmax(0,1.35fr) minmax(150px,1fr) auto;gap:8px;min-height:0}
+.sm-scope,.sm-speed{min-height:0}
+.sm canvas{display:block}
+.sm-read{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:6px}
+.sm-read div{padding:6px 8px;border-radius:8px;background:var(--surface);border:1px solid var(--line);min-width:0}
+.sm-read span{display:block;font-size:10.5px;color:var(--muted)}
+.sm-read b{display:block;font:600 12.5px/1.3 var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sm-read b.bad{color:var(--err)}
+.sm-eq{padding:8px 10px;border-radius:8px;background:var(--code-bg);font:400 12.5px/1.7 var(--f-mono);overflow-wrap:anywhere}
+.sm-eq b{color:var(--accent)}
+.sm-warn{padding:9px 11px;border-radius:8px;background:var(--warn-bg);border-left:4px solid var(--warn)}
+.sm-warn.err{background:var(--err-bg);border-left-color:var(--err)}
+.sm-warn strong{display:block;font-size:13px;margin-bottom:3px}
+.sm-warn p{font-size:12.5px}
+.sm-tbl{width:100%;border-collapse:collapse;font:400 12px/1.4 var(--f-mono);font-variant-numeric:tabular-nums}
+.sm-tbl th,.sm-tbl td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.sm-tbl th{font-weight:600;color:var(--muted);font-size:11px}
+.sm-tbl tr.on td{background:var(--ok-bg);color:var(--ok);font-weight:600}
+.sm-opts{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px}
+.sm-opts label{display:inline-flex;align-items:center;gap:6px}
+.sm-opts input{accent-color:var(--accent);width:18px;height:18px}
+#smTrap{display:block;border-radius:8px}
+.sm .ctl{grid-template-columns:64px minmax(0,1fr) 84px}
+@media (max-width:860px){
+  /* 窄螢幕：整個視窗一起捲動，各區塊用自己的高度（不要被壓扁、互相重疊） */
+  .sm{overflow-y:auto;-webkit-overflow-scrolling:touch;grid-template-rows:auto auto auto;align-content:start}
+  .sm .la-main{grid-template-rows:auto auto;min-height:auto}
+  .sm-left{grid-template-rows:300px 200px auto;min-height:auto}
+  .sm .la-side{min-height:auto;overflow:visible}
+  .sm .la-pane{flex:none;overflow:visible}
+  .sm-us button{padding:8px 7px;min-width:38px}
+}
 .addgroup{display:flex;flex-direction:column;gap:6px}
 .addgroup small{color:var(--muted);font-size:11.5px}

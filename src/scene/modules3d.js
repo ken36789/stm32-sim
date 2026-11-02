@@ -149,6 +149,28 @@ export function buildModule(m, [sx, sz], parent){
       hitTarget(6, wx - 1, 0, sz, { type:'module', id:m.id }, parent);
       break;
     }
+    case 'stepper': {
+      // TB67S128FTG 驅動板（QFN 晶片、DMODE 指撥開關）＋ 直立的 NEMA 步進馬達，軸上裝負載（圓盤／飛輪）
+      const mx = 5.6, mz = -6.6, big = v.id === 'nema23', S = big ? 11.6 : 10.6;
+      box(4.6, .8, 4.6, M(0x1c1e21, { roughness:.5 }), 2.6, .4, 5.2, grp);
+      topPlane(4.4, 4.4, ctex(128, 128, g => { g.fillStyle = '#1c1e21'; g.fillRect(0, 0, 128, 128); g.fillStyle = '#c6ccd1'; g.font = '600 19px "JetBrains Mono", monospace'; g.textAlign = 'center'; g.fillText('TB67S', 64, 54); g.fillText('128FTG', 64, 80); g.beginPath(); g.arc(16, 112, 6, 0, 7); g.fillStyle = '#121417'; g.fill(); }), 2.6, .81, 5.2, grp);
+      box(3.6, 1, 5.2, M(0xc0392b, { roughness:.5 }), 8.6, .5, 5.2, grp);                       // DMODE 指撥開關（紅色）
+      V.dip = [0, 1, 2].map(k => box(1, .55, 1.1, M(0xf2f2f2), 8.6, 1.1, 3.6 + k * 1.6, grp));
+      ['#d63031', '#2d3436', '#0984e3', '#00b894'].forEach((c, k) => box(.45, .35, 5.6, M(parseInt(c.slice(1), 16), { roughness:.6 }), 1.4 + k * .8, .2, -1.4, grp));   // 線圈 A+ A− B+ B−
+      const al = M(0xb8bec4, { metalness:.7, roughness:.3 });
+      box(S, 1.6, S, al, mx, .8, mz, grp); box(S - .4, 5.6, S - .4, M(0x1f2226, { roughness:.55, metalness:.25 }), mx, 4.4, mz, grp); box(S, 1.6, S, al, mx, 8, mz, grp);
+      cyl(2.2, .6, al, mx, 9.1, mz, grp, 24); cyl(.55, 2.4, M(0xd9dde0, { metalness:.8, roughness:.2 }), mx, 10.2, mz, grp, 16);
+      V.rotor = new THREE.Group(); V.rotor.position.set(mx, 11, mz); grp.add(V.rotor);
+      const accent = M(0xffd166, { emissive:0x332200 });
+      const hub = new THREE.Group(); cyl(1.4, 1.2, M(0x2a2d31), 0, 0, 0, hub, 16); box(.7, .5, 3.6, accent, 0, .6, -1.6, hub);
+      const disk = new THREE.Group(); cyl(4.6, .6, M(0xc7ccd1, { metalness:.75, roughness:.28 }), 0, 0, 0, disk, 40); box(.9, .2, 4.2, accent, 0, .4, -2.3, disk); for (let k = 0; k < 4; k++){ const a = k * Math.PI / 2 + Math.PI / 4; cyl(.55, .7, M(0x1a1c1f), Math.cos(a) * 2.6, .05, Math.sin(a) * 2.6, disk, 12); }
+      const fly = new THREE.Group(); cyl(6.6, 1.8, M(0x8f969c, { metalness:.8, roughness:.3 }), 0, .4, 0, fly, 48); cyl(4.6, 1.9, M(0x5d646a, { metalness:.7, roughness:.35 }), 0, .45, 0, fly, 40); box(1.1, .25, 6, accent, 0, 1.45, -3.2, fly);
+      V.loads = [hub, disk, fly]; V.loads.forEach(g => V.rotor.add(g));
+      V.glow = glowSprite(0xff3b30, 26); V.glow.position.set(sx + mx, 6, sz + mz); parent.add(V.glow);
+      V.en = glowSprite(0x3ddc84, 6); V.en.position.set(sx + 5.6, -1.8, sz + 9.4); parent.add(V.en);
+      hitBox(S + 2, 14, S + 2, sx + mx, 3, sz + mz, { type:'module', id:m.id }, parent);
+      break;
+    }
     case 'la_i2c': case 'la_uart': case 'la_spi': case 'la_can': {
       // 小型邏輯分析儀：外殼、螢幕、USB 線與活動指示燈
       box(13, 6, T.d - 6, M(0x23272c, { roughness:.45, metalness:.2 }), cx - 2, 3, 0, grp);
@@ -183,5 +205,12 @@ export function updateModule(m, s, t){
     }
     case 'can': V.glow.visible = !!s.on; break;
     case 'tc': V.glow.visible = (m.st.tcT ?? 0) > 60; break;
+    case 'stepper': {
+      V.rotor.rotation.y = -s.deg * Math.PI / 180;                 // 從軸端往下看，順時針為正
+      V.loads.forEach((g, k) => { g.visible = k === s.load; });
+      const bits = s.bits || '000'; V.dip.forEach((d, k) => { d.position.x = 8.6 + (bits[k] === '1' ? .9 : -.9); });
+      V.glow.visible = !!s.stalled; if (s.stalled) V.glow.material.opacity = .55 + .45 * Math.sin(t / 70);
+      V.en.visible = !!s.en; break;
+    }
   }
 }

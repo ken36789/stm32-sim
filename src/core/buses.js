@@ -5,6 +5,7 @@ import { variantOf } from './parts.js';
 import { hooks } from './hooks.js';
 import { TRACE, traceI2C, traceUART, traceSPI, traceCAN, edge, tNow, utf8 } from './trace.js';
 import { makeSpiDevice } from './spidev.js';
+import { pwmReset } from './steppers.js';
 
 /* ---------- UART（printf 經由虛擬序列埠送出） ---------- */
 export function uartOut(s){
@@ -125,4 +126,4 @@ export function canPending(){ canPoll(); return CAN.started ? CAN.rx.length : 0;
 export function canRecv(){ canPoll(); return CAN.started ? CAN.rx.shift() || null : null; }
 
 /** 程式重新開始時：清除 MCU 控制器狀態（Flash 內容與節點計數保留） */
-export function resetBuses(){ canReset(); for (const m of bench.modules) if (SPI_TYPES.includes(m.type)){ m.st.csLow = false; m.st.sdev = null; } }
+export function resetBuses(){ canReset(); pwmReset(); for (const m of bench.modules) if (SPI_TYPES.includes(m.type)){ m.st.csLow = false; m.st.sdev = null; } }

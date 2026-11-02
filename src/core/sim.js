@@ -19,9 +19,12 @@ export const isAnalyzer = m => /^la_/.test(m.type);
 const syncTrace = () => setTrace(bench.modules.some(isAnalyzer));
 
 /* ---------- GPIO 輸出（所有 SDK 都經過這裡，邏輯分析儀與 SPI 片選才看得到） ---------- */
-export const pinListeners = [];
+export const pinListeners = [], pinPreListeners = [];
 export function pinWrite(p, v){
-  SIM.mode[p] = 'out'; const nv = v ? 1 : 0;
+  const nv = v ? 1 : 0;
+  if (SIM.out[p] === nv && SIM.mode[p] === 'out') return;
+  for (const f of pinPreListeners) f(p, nv);
+  SIM.mode[p] = 'out';
   if (SIM.out[p] === nv) return;
   SIM.out[p] = nv; traceGpio(p, nv);
   for (const f of pinListeners) f(p, nv);

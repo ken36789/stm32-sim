@@ -107,6 +107,24 @@ export const MODULE_TYPES = {
   },
 };
 
+/* ---------- 步進馬達：TB67S128FTG 驅動模組＋雙極步進馬達 ---------- */
+const TB67 = [ds('TB67S128FTG Datasheet（Toshiba，PDF）', 'https://toshiba.semicon-storage.com/info/docget.jsp?did=61073&prodName=TB67S128FTG'),
+  ds('TB67S128FTG 產品頁（Toshiba）', 'https://toshiba.semicon-storage.com/us/semiconductor/product/motor-driver-ics/stepping-motor-driver-ics/detail.TB67S128FTG.html'),
+  ds('Pololu TB67S128FTG 驅動板（腳位與設定說明）', 'https://www.pololu.com/product/2998')];
+const DRV = [['驅動 IC', 'Toshiba TB67S128FTG（P-VQFN64，CLK-IN 模式）'], ['微步', '全步～1/128，模組上的 DMODE 指撥開關'], ['馬達電源', '24 V（模組上的端子，6.5–44 V）'], ['邏輯電位', 'IOREF 接 3V3（2–5.5 V）']];
+MODULE_TYPES.stepper = {
+  name:'步進馬達（TB67S128FTG）', short:'馬達', w:24, d:28, pcb:0x1d5c38, motor:true,
+  pins:[['VCC', '邏輯電位 IOREF（接 3V3）'], ['GND', '接地'], ['CLK', 'STEP：每個上升緣前進一個微步（接計時器的 PWM 輸出）'], ['CW', 'CW/CCW：高電位順時針、低電位逆時針'], ['EN', 'ENABLE：高電位才會送電給馬達']],
+  variants:[
+    { id:'nema17', name:'NEMA 17 步進馬達 1.8°', part:'42 mm 雙極步進馬達（1.7 A）＋TB67S128FTG', grade:1, step:1.8, T:.40, J:5.4e-6, fc:250, rated:1.7, Iset:1.5, vmin:2, vmax:5.5,
+      specs:[...DRV, ['步距角', '1.8°（一圈 200 個全步）'], ['保持轉矩', '0.40 N·m（額定 1.7 A）'], ['電流設定', '1.5 A（VREF ≈ 0.96 V）'], ['轉子慣量', '54 g·cm²']], links:TB67 },
+    { id:'nema17-09', name:'NEMA 17 高解析 0.9°', part:'42 mm 0.9° 雙極步進馬達（1.7 A）＋TB67S128FTG', grade:2, step:.9, T:.44, J:6.8e-6, fc:180, rated:1.7, Iset:1.5, vmin:2, vmax:5.5, better:'一圈 400 個全步，定位更細；最高轉速比較低',
+      specs:[...DRV, ['步距角', '0.9°（一圈 400 個全步）'], ['保持轉矩', '0.44 N·m'], ['電流設定', '1.5 A'], ['轉子慣量', '68 g·cm²']], links:TB67 },
+    { id:'nema23', name:'NEMA 23 步進馬達 1.8°', part:'57 mm 雙極步進馬達（2.8 A）＋TB67S128FTG', grade:3, step:1.8, T:1.26, J:2.8e-5, fc:220, rated:2.8, Iset:2.0, vmin:2, vmax:5.5, better:'扭力約 3 倍，帶重負載也能加速（驅動 IC 要加散熱片）',
+      specs:[...DRV, ['步距角', '1.8°（一圈 200 個全步）'], ['保持轉矩', '1.26 N·m（額定 2.8 A）'], ['電流設定', '2.0 A（驅動板不加散熱約可連續 2.1 A）'], ['轉子慣量', '280 g·cm²']], links:TB67 },
+  ],
+};
+
 /* ---------- 量測儀器：邏輯分析儀（每一種都會顯示波形，可以點進去看解說與教學） ---------- */
 const LA_VARIANTS = (pre, proto) => [
   { id:`${pre}-24m`, name:'USB 邏輯分析儀 24 MHz', part:'Cypress CY7C68013A（FX2LP）', grade:1, rate:24e6, specs:[['取樣率', '最高 24 MS/s'], ['通道', '8 通道'], ['輸入', '0–5 V 邏輯電位'], ['解碼', proto]], links:[ds('搜尋 CY7C68013A Datasheet', g('Cypress CY7C68013A FX2LP'))] },
@@ -125,8 +143,8 @@ Object.assign(MODULE_TYPES, {
     ] }),
 });
 
-export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay', 'tc', 'flash', 'can', 'la_i2c', 'la_uart', 'la_spi', 'la_can'];
-export const MODULE_GROUPS = [['輸出', ['led', 'rgb', 'buzzer', 'relay']], ['輸入與感測', ['button', 'pir', 'pot', 'temp']], ['SPI／CAN 元件', ['tc', 'flash', 'can']], ['量測儀器（邏輯分析儀）', ['la_i2c', 'la_uart', 'la_spi', 'la_can']]];
+export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay', 'tc', 'flash', 'can', 'stepper', 'la_i2c', 'la_uart', 'la_spi', 'la_can'];
+export const MODULE_GROUPS = [['輸出', ['led', 'rgb', 'buzzer', 'relay']], ['輸入與感測', ['button', 'pir', 'pot', 'temp']], ['SPI／CAN 元件', ['tc', 'flash', 'can']], ['馬達', ['stepper']], ['量測儀器（邏輯分析儀）', ['la_i2c', 'la_uart', 'la_spi', 'la_can']]];
 export const variantOf = (type, vid) => MODULE_TYPES[type].variants.find(v => v.id === vid) || MODULE_TYPES[type].variants[0];
 export const MAX_MODULES = 12;
 export const DEFAULT_MODULES = [

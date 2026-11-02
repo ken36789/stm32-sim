@@ -169,6 +169,25 @@
     </aside>
   </div>
 </div>
+<div class="la sm" id="sm" hidden role="dialog" aria-modal="true" aria-labelledby="smTitle">
+  <header class="la-top">
+    <div class="la-ttl"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11V4.5M11 11l4.5 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><div><strong id="smTitle">步進馬達示波器</strong><small id="smSub"></small></div></div>
+    <div class="sm-motors" id="smMotors"></div>
+    <button class="btn sm" id="smClose" type="button">關閉</button>
+  </header>
+  <div class="la-bar" id="smBar"></div>
+  <div class="la-main sm-main">
+    <div class="sm-left">
+      <div class="la-wave sm-scope"><canvas id="smCv" aria-label="示波器：STEP、DIR 與兩組線圈電流"></canvas></div>
+      <div class="la-wave sm-speed"><canvas id="smSp" aria-label="轉速曲線與電流相量圖"></canvas></div>
+      <div class="sm-read" id="smRead" aria-live="off"></div>
+    </div>
+    <aside class="la-side">
+      <div class="la-tabs" role="tablist"><button type="button" data-tab="info" role="tab">說明</button><button type="button" data-tab="manual" role="tab">手動測試</button><button type="button" data-tab="learn" role="tab">教學</button></div>
+      <div class="la-pane" id="smPane"></div>
+    </aside>
+  </div>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/src/main.js"></script>
 </body>

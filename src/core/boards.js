@@ -97,8 +97,13 @@ function buildBoard(r){
   const canPins = form === 'n64' ? { rx:'PA11', tx:'PA12' } : form === 'n32' ? { rx:'D10', tx:'D2' } : form === 'pill' ? { rx:'PB8', tx:'PB9' } : { rx:'PD0', tx:'PD1' };
   const noCan = NOCAN.some(x => mcu.startsWith(x)) ? `${mcu.slice(0, 9)} 沒有 CAN 控制器。要做 CAN 實驗，請換成 F446、F103、G474、H743 等有 CAN 的晶片。` : null;
   const can = noCan ? null : { bus: fd ? 'FDCAN1' : single ? 'CAN' : 'CAN1', inst: fd ? 'FDCAN1' : 'CAN1', handle: fd ? 'hfdcan1' : single ? 'hcan' : 'hcan1', drv: fd ? 'fdcan' : 'bxcan', ...canPins };
-  const o = { spi, can };
-  const labels = extendHeader(HEADERS[form], ard, [vcp[1], vcp[2], spi.sck, spi.miso, spi.mosi, spi.cs, can?.tx, can?.rx]);
+  // 步進馬達的 STEP：兩組獨立的計時器 PWM 輸出（頻率要能分開調）
+  const STEP = { n64:[['D9', 'TIM3', 2], ['D6', 'TIM2', 3]], n144:[['D9', 'TIM4', 4], ['D6', 'TIM1', 1]], n32:[['D9', 'TIM1', 1], ['A1', 'TIM2', 2]], pill:[['PA8', 'TIM1', 1], ['PA1', 'TIM2', 2]], disco:[['PE9', 'TIM1', 1], ['PB10', 'TIM2', 3]] };
+  const STEP_FIX = { STM32F410:[['D7', 'TIM1', 1], ['A1', 'TIM5', 2]], STM32F030:[['D9', 'TIM3', 2], ['D7', 'TIM1', 1]], STM32L452:[['D7', 'TIM1', 1], ['D6', 'TIM2', 3]], STM32L053:[['D6', 'TIM2', 3], ['D5', 'TIM22', 1]] };
+  const fix = Object.keys(STEP_FIX).find(x => mcu.startsWith(x));
+  const step = (fix ? STEP_FIX[fix] : STEP[form]).map(([pin, tim, ch]) => ({ pin, tim:`${tim}_CH${ch}`, inst:tim, ch }));
+  const o = { spi, can, step };
+  const labels = extendHeader(HEADERS[form], ard, [vcp[1], vcp[2], spi.sck, spi.miso, spi.mosi, spi.cs, can?.tx, can?.rx, ...step.map(x => x.pin)]);
   const counts = {};
   const header = labels.map(label => {
     const n = counts[label] = (counts[label] || 0) + 1;
@@ -128,7 +133,7 @@ function buildBoard(r){
     leds: leds.map(([n, pin, color, activeLow]) => ({ name:n, pin, color, hex:LED_HEX[color], activeLow:!!activeLow })),
     btn: btn ? { name:btn[0], pin:btn[1], activeLow:btn[2] } : null,
     vcp: { periph:vcp[0], tx:vcp[1], rx:vcp[2], handle:vcp[3] },
-    i2c:{ ...i2c, inst:'I2C1' }, spi, noSpi:null, can, noCan, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
+    i2c:{ ...i2c, inst:'I2C1' }, spi, noSpi:null, can, noCan, step, noStep:null, header, pcb: extra.pcb ?? FORMS[form].pcb, xtal: extra.xtal || null,
     links: [
       { label:`${mcu} Datasheet（PDF）`, url:`https://www.st.com/resource/en/datasheet/${base}.pdf` },
       { label:'MCU 產品頁（參考手冊、勘誤表）', url:`https://www.st.com/en/microcontrollers-microprocessors/${base}.html` },

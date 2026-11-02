@@ -9,6 +9,8 @@ import { SIM, bench, PINS, PIN_ORDER, wires, addWire, removeWire, clearWires, wi
 import { canPoll, canModule, nodeOfCan } from './core/buses.js';
 import { analyzerActive } from './core/analyzer.js';
 import { initAnalyzer, openAnalyzer, analyzerBenchChanged } from './ui/analyzer.js';
+import { initStepper, openStepper, stepperBenchChanged } from './ui/stepper.js';
+import { isStepper, stepperTick, motorInfo, motorOf, setDiv, setLoad, ustepName, dmodeBits, LOADS } from './core/steppers.js';
 import { runChecks } from './core/checks.js';
 import { startProgram, stopProgram, isRunning } from './core/runtime.js';
 import { suggestWiring, exampleCode } from './core/codegen.js';
@@ -123,7 +125,7 @@ function renderBoardInfo(){
 let wideBench = false;
 function onBenchChanged(){
   if (G.ready){ buildBench(); setUsbVisible(SIM.usb); const wide = bench.modules.some(m => m.slot >= 8); if (wide !== wideBench){ wideBench = wide; fitView(); } }
-  fillSelects(); renderPinMap(); renderBoardInfo(); renderInspector(); analyzerBenchChanged();
+  fillSelects(); renderPinMap(); renderBoardInfo(); renderInspector(); analyzerBenchChanged(); stepperBenchChanged();
   afterWiring();
 }
 function changeBoard(id){
@@ -141,6 +143,8 @@ const ACTIONS = {
   removeModule:id => { const m = moduleById(id); if (!m) return; const name = moduleLabel(m); removeModule(id); showInspector('overview'); toast(`已移除 ${name}。`); },
   addModule:type => { const m = addModule(type); if (!m){ toast(`工作台最多放 ${MAX_MODULES} 個模組。`); return; } showInspector('module', m.id); markModule(m.id); toast(isAnalyzer(m) ? `已新增 ${moduleLabel(m)}。按「建議接線」接好探棒後，點 3D 畫面上的分析儀就能看波形。` : `已新增 ${moduleLabel(m)}。到「接線」分頁按「建議接線」可以自動接好。`); },
   openAnalyzer:id => openAnalyzer(id),
+  openStepper:id => openStepper(id),
+  setStep:(id, k, v) => { const m = moduleById(id); if (!m) return; if (k === 'div'){ setDiv(m, v); toast(`${moduleLabel(m)}：微步改成 ${ustepName(v)}（DMODE ${dmodeBits(v)}）。程式不用重新燒錄，但 pps 不變時轉速會跟著改變。`); } else { setLoad(m, v); toast(`${moduleLabel(m)}：負載換成${LOADS[v].name}。`); } stepperChanged(); },
   setTc:(id, k, v) => { const m = moduleById(id); if (m){ m.st[k] = v; outputsChanged(); } },
   setNode:(id, on) => { const m = moduleById(id); if (m){ nodeOfCan(m).on = on; renderInspector(); toast(on ? '測試節點已開啟：會回 ACK，並每 500 ms 送出 ID 0x200。' : '測試節點已關閉：MCU 送出的訊框沒有人回 ACK。用 CAN 分析儀看看會發生什麼事。'); } },
   eraseFlash:id => { const m = moduleById(id); if (m){ m.st.mem = new Map(); renderInspector(); toast('Flash 已全部抹除成 0xFF。'); } },
@@ -222,7 +226,7 @@ function onPick(h){
   if (!h){ if (UI.sel || UI.selWire){ UI.sel = null; selectWire(null); refreshRings(); renderHint(); } return; }
   if (h.type === 'usb'){ setUsb(!SIM.usb); return; }
   if (h.type === 'part'){ openInspector('part', h.key); return; }
-  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); return; }
+  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); if (m && isStepper(m)) openStepper(h.id); return; }
   if (h.type === 'touch'){ const m = moduleById(h.id); if (m?.type === 'pir') triggerMotion(h.id); else if (m) warmSensor(h.id); return; }
   if (h.type === 'wire'){ UI.sel = null; refreshRings(); renderHint(); selectWire(h.w); return; }
   if (h.type !== 'pin') return;
@@ -241,11 +245,12 @@ function tipFor(h){
   if (h.type === 'wire') return `<b>${esc(PINS[h.w.a].label)} → ${esc(PINS[h.w.b].label)}</b>\n點一下可拔除`;
   if (h.type === 'usb') return `<b>USB（${esc(b.prog)}）</b>\n點一下${SIM.usb ? '拔除' : '接上'}`;
   if (h.type === 'part'){ const p = boardParts(b).find(x => x.key === h.key); return `<b>${esc(p?.part || '')}</b>\n${esc(p?.name || '')}\n點一下查看資料與 datasheet`; }
-  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : '點一下查看資料、更換型號'}` : ''; }
+  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : isStepper(m) ? `${stepperTip(m)}\n點一下打開步進馬達示波器` : '點一下查看資料、更換型號'}` : ''; }
   if (h.type === 'press'){ if (h.which === 'B1') return `<b>${esc(b.btn.name)}</b>（${esc(b.btn.pin)}）\n按住＝按下`; if (h.which === 'RESET') return '<b>RESET</b>\n按下後放開會重新執行程式'; const m = moduleById(h.which); return m ? `<b>${esc(moduleLabel(m))}</b>\n按住＝OUT 高電位` : ''; }
   if (h.type === 'touch'){ const m = moduleById(h.id); return !m ? '' : m.type === 'pir' ? `<b>${esc(moduleLabel(m))}</b>\n點一下模擬有人經過` : `<b>${esc(moduleLabel(m))}</b>\n約 ${sensorTemp(m).toFixed(2)} °C\n點一下模擬手指加溫`; }
   return '';
 }
+function stepperTip(m){ const i = motorInfo(m); return `${ustepName(i.div)} · ${Math.round(i.pps)} pps · ${Math.abs(i.rpm).toFixed(0)} RPM${i.lost ? ` · 失步 ${Math.abs(i.lost)} 步` : ''}`; }
 function setHover(h, e){
   const tip = $('#tip'), id = h && h.type === 'pin' ? h.id : null;
   if (UI.hover !== id){ UI.hover = id; refreshRings(); }
@@ -334,6 +339,7 @@ function applyOutputs(){
   if (G.ready){
     setLed('PWR', p); bench.board.leds.forEach(l => setLed(l.name, boardLedOn(l)));
     for (const m of bench.modules){
+      if (isStepper(m)) continue;                                  // 步進馬達每一格畫面都更新（見 loop）
       const s = isAnalyzer(m) ? { active:p && analyzerActive(m) } : m.type === 'can' ? { on:!!m.st.node?.on && p } : moduleState(m); updateModule(m, s, t);
       if (m.type === 'buzzer' && s.on) buzz = true;
       if (m.type === 'relay'){ if (audio.relays[m.id] !== undefined && audio.relays[m.id] !== s.on) relayClick(); audio.relays[m.id] = s.on; }
@@ -376,9 +382,17 @@ const KEY = 'stm32-sim-v2';
 let storeTimer;
 function store(){
   clearTimeout(storeTimer);
-  storeTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ board:bench.board.id, modules:bench.modules.map(m => ({ id:m.id, type:m.type, variant:m.variant, slot:m.slot })), wires:wires.map(w => [w.a, w.b, w.color]), code:ta.value, example:isExampleCode(), tab:UI.tab, sound:audio.enabled })); } catch (_){} }, 300);
+  storeTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ board:bench.board.id, modules:bench.modules.map(m => ({ id:m.id, type:m.type, variant:m.variant, slot:m.slot, ...(isStepper(m) ? { div:motorOf(m).div, load:motorOf(m).load } : {}) })), wires:wires.map(w => [w.a, w.b, w.color]), code:ta.value, example:isExampleCode(), tab:UI.tab, sound:audio.enabled })); } catch (_){} }, 300);
 }
 function restore(){ try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_){ return null; } }
+
+/* ---- 步進馬達：每一格畫面積分轉子並更新 3D ---- */
+function stepperChanged(){ updateSteppers(performance.now()); renderInspector(); store(); }
+function updateSteppers(t){
+  const list = bench.modules.filter(isStepper); if (!list.length) return;
+  stepperTick();
+  if (G.ready) for (const m of list){ const i = motorInfo(m), mo = motorOf(m); updateModule(m, { deg:i.deg, stalled:i.stalled, en:i.en, load:mo.load, bits:dmodeBits(mo.div) }, t); }
+}
 
 /* ---- 動畫迴圈 ---- */
 let lastT = performance.now(), frame = 0;
@@ -387,6 +401,7 @@ function loop(t){
   const dt = Math.min(.1, (t - lastT) / 1000); lastT = t; frame++;
   tickSim(dt); R.controls.update();
   if (canModule()) canPoll();
+  updateSteppers(t);
   const now = performance.now(); let changed = false;
   for (const [id, mk] of Object.entries(UI.marks)) if (mk.until < now){ delete UI.marks[id]; changed = true; }
   if (changed) refreshRings();
@@ -413,10 +428,11 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
 /* ---- 啟動 ---- */
 (async function boot(){
   initTheme(); wireHooks(); initInspector(ACTIONS); initAnalyzer();
+  initStepper({ code:codeValue, changed:stepperChanged, example:() => { setCode(exampleCode(), true); log('範例程式已依目前的微步設定重新產生，請重新檢測、編譯並燒錄。', 'lo'); toast('範例程式已更新。關閉示波器後，依序按「檢測 → 編譯 → 燒錄」。'); } });
   const saved = restore();
   resetBench();
   setBoard(saved && BOARD_BY_ID[saved.board] ? saved.board : DEFAULT_BOARD, true);
-  if (saved && Array.isArray(saved.modules)) saved.modules.forEach(m => MODULE_TYPES[m.type] && addModule(m.type, m.variant, true, m));
+  if (saved && Array.isArray(saved.modules)) saved.modules.forEach(s => { const m = MODULE_TYPES[s.type] && addModule(s.type, s.variant, true, s); if (m && isStepper(m)){ if (s.div) setDiv(m, s.div); if (s.load !== undefined) setLoad(m, s.load); } });
   else DEFAULT_MODULES.forEach(m => addModule(m.type, m.variant, true));
   renderHint(); renderBoardInfo();
   log('按「編譯並燒錄」把 main.c 寫進開發板的 Flash。快捷鍵 Ctrl/⌘ + S。', 'ld');

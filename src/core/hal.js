@@ -5,6 +5,7 @@ import { cfmt } from './printf.js';
 import { hooks } from './hooks.js';
 import { vendorAPI, VENDOR_PREFIX } from './hal-vendor.js';
 import { i2cWrite, i2cRead, i2cMemRead, i2cMemWrite, i2cProbe, uartOut, spiTransfer, CAN, canSend, canPending, canRecv } from './buses.js';
+import { stepIndexes, pwmSet, pwmRun } from './steppers.js';
 
 export const STOP = { stop:true };
 const HAL_OK = 0, HAL_ERROR = 1;
@@ -24,17 +25,33 @@ export function makeAPI(r){
   const spiOk = h => !h || !h.name || !bench.board.spi || h.name === bench.board.spi.inst;
   const fdLen = x => { x = Number(x) || 0; if (x > 15) x = x >>> 16; return Math.min(8, x); };
   const canOk = h => h && /CAN/.test(h.name || '');
+  // 計時器 PWM（STEP 脈波）：範例的 MX_TIMx_Init 把計時器時脈預除頻到 1 MHz，頻率 = 1 MHz ÷ (ARR + 1)
+  const tims = {}, timOf = h => tims[h?.name] || (tims[h?.name] = { arr:999, run:{}, ccr:{} }), chOf = c => (Number(c) || 0) / 4 + 1;
+  const timApply = h => {
+    const t = timOf(h);
+    for (const k of stepIndexes(h?.name)){
+      const ch = bench.board.step[k].ch;
+      pwmSet(k, 1e6 / (t.arr + 1)); pwmRun(k, !!t.run[ch] && (t.ccr[ch] ?? 1) > 0);
+    }
+  };
   const noop = () => { chk(); return HAL_OK; };
+  // 延遲：在 MCU 上，延遲之間的程式只要幾微秒，所以「工作＋延遲 10 ms」的迴圈就是 10 ms 一次。
+  // 模擬器執行程式、瀏覽器計時器晚醒都會花掉時間，所以延遲從「上一次延遲應該結束的時間」起算（落後 50 ms 內），
+  // 平均週期就和真的 MCU 一樣；韌體用固定 dt 算的位置和加減速才會和實際送出的脈波一致。
+  const waitMs = async ms => {
+    chk(); ms = Math.max(0, Number(ms) || 0);
+    const now = performance.now(), lag = r.vend !== undefined ? now - r.vend : Infinity;
+    const end = (lag >= 0 && lag < 50 ? r.vend : now) + ms;
+    do { await sleep(Math.max(0, Math.min(end - performance.now(), 100))); chk(); } while (performance.now() < end);
+    r.vend = end;
+  };
   const api = {
     HAL_Init:noop, SystemClock_Config:noop, MX_GPIO_Init:noop, MX_I2C1_Init:noop, MX_I2C2_Init:noop, MX_I2C3_Init:noop,
     MX_USART1_UART_Init:noop, MX_USART2_UART_Init:noop, MX_USART3_UART_Init:noop, MX_LPUART1_UART_Init:noop,
     MX_ADC1_Init:noop, MX_ADC_Init:noop, MX_TIM2_Init:noop, MX_TIM3_Init:noop, MX_SPI1_Init:noop, MX_SPI2_Init:noop, MX_SPI3_Init:noop,
     MX_CAN_Init:noop, MX_CAN1_Init:noop, MX_CAN2_Init:noop, MX_FDCAN1_Init:noop, MX_FDCAN2_Init:noop,
     Error_Handler(){ chk(); throw new Error('進入 Error_Handler()'); },
-    async HAL_Delay(ms){
-      chk(); const end = performance.now() + Math.max(0, Number(ms) || 0);
-      do { await sleep(Math.max(0, Math.min(end - performance.now(), 100))); chk(); } while (performance.now() < end);
-    },
+    HAL_Delay:ms => waitMs(ms),
     HAL_GetTick(){ chk(); return Math.floor(performance.now() - r.t0); },
     HAL_GPIO_WritePin(port, mask, st){ chk(); for (const p of pinsOf(port, mask)) pinWrite(p, st); hooks.outputs(); },
     HAL_GPIO_TogglePin(port, mask){ chk(); for (const p of pinsOf(port, mask)) pinToggle(p); hooks.outputs(); },
@@ -47,6 +64,13 @@ export function makeAPI(r){
     HAL_SPI_TransmitReceive(h, tx, rx, n){ chk(); if (!spiOk(h)) return HAL_ERROR; fill(rx, spiTransfer(toBytes(tx, n))); return HAL_OK; },
     HAL_SPI_Transmit(h, tx, n){ chk(); if (!spiOk(h)) return HAL_ERROR; spiTransfer(toBytes(tx, n)); return HAL_OK; },
     HAL_SPI_Receive(h, rx, n){ chk(); if (!spiOk(h)) return HAL_ERROR; fill(rx, spiTransfer(Array(Math.max(0, n)).fill(0xFF))); return HAL_OK; },
+    HAL_TIM_PWM_Start(h, c){ chk(); if (!h?.name) return HAL_ERROR; timOf(h).run[chOf(c)] = true; timApply(h); return HAL_OK; },
+    HAL_TIM_PWM_Stop(h, c){ chk(); if (!h?.name) return HAL_ERROR; timOf(h).run[chOf(c)] = false; timApply(h); return HAL_OK; },
+    __HAL_TIM_SET_AUTORELOAD(h, v){ chk(); timOf(h).arr = Math.max(0, Math.trunc(Number(v) || 0)) >>> 0; timApply(h); },
+    __HAL_TIM_GET_AUTORELOAD(h){ chk(); return timOf(h).arr; },
+    __HAL_TIM_SET_COMPARE(h, c, v){ chk(); timOf(h).ccr[chOf(c)] = Math.trunc(Number(v) || 0) >>> 0; timApply(h); },
+    __HAL_TIM_SET_COUNTER(){ chk(); },
+    TIM_CHANNEL_1:0, TIM_CHANNEL_2:4, TIM_CHANNEL_3:8, TIM_CHANNEL_4:12,
     HAL_CAN_ConfigFilter(){ chk(); return HAL_OK; },
     HAL_CAN_Start(h){ chk(); if (canOk(h)) CAN.started = true; return HAL_OK; },
     HAL_CAN_Stop(){ chk(); CAN.started = false; return HAL_OK; },
@@ -99,7 +123,8 @@ export function makeAPI(r){
   'ABCDEFGHIJK'.split('').forEach(p => api['GPIO' + p] = { port:p });
   for (let b = 0; b < 16; b++) api['GPIO_PIN_' + b] = 1 << b;
   for (let n = 0; n <= 8; n++) api['FDCAN_DLC_BYTES_' + n] = n;
-  Object.assign(api, vendorAPI({ chk, sleep, outputs:() => hooks.outputs(), print:(f, a) => { chk(); const s = cfmt(f, a); uartOut(s); return s.length; } }));
+  for (let n = 1; n <= 22; n++){ api['htim' + n] = { name:'TIM' + n }; api[`MX_TIM${n}_Init`] = noop; }
+  Object.assign(api, vendorAPI({ chk, sleep, waitMs, outputs:() => hooks.outputs(), print:(f, a) => { chk(); const s = cfmt(f, a); uartOut(s); return s.length; } }));
   // 未實作的 SDK 函式與巨集：函式略過並回傳 0，全大寫或 k 開頭的常數視為 0（透過 with 區塊查找）
   const known = new Set(Object.keys(api));
   const stub = () => 0;

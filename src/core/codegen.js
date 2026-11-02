@@ -16,7 +16,7 @@ export function suggestWiring(){
   pairs.push([p3, 'R.+1'], [g, 'R.-1']);
   let plus = 2, minus = 2;
   const rail = s => s === '+' ? `R.+${plus++}` : `R.-${minus++}`;
-  const BUS = ['scl', 'sda', 'vcp', 'led', 'sck', 'miso', 'mosi', 'cantx', 'canrx', 'cs'];
+  const BUS = ['scl', 'sda', 'vcp', 'led', 'sck', 'miso', 'mosi', 'cantx', 'canrx', 'cs', 'step'];
   const avoid = h => h.kind !== 'gpio' || ['scl', 'sda', 'vcp', 'led'].some(t => h.tags.includes(t)) || (b.btn && h.mcu === b.btn.pin);
   const rank = h => (BUS.some(t => h.tags.includes(t)) ? 10 : 0) + (/^D([2-9]|1[0-2])$/.test(h.label) ? 0 : /^D/.test(h.label) ? 2 : 1);
   const digital = H.filter(h => !avoid(h) && !h.tags.includes('adc')).sort((x, y) => rank(x) - rank(y));
@@ -31,7 +31,7 @@ export function suggestWiring(){
     if (pins.includes('GND')) pairs.push([rail('-'), P('GND')]);
   };
   const devices = bench.modules.filter(m => !isAnalyzer(m)), analyzers = bench.modules.filter(isAnalyzer);
-  let firstSpi = null;
+  let firstSpi = null, nStep = 0;
   for (const m of devices){
     const v = variantOf(m.type, m.variant), P = n => `${m.id}.${n}`;
     power(m, v);
@@ -43,6 +43,12 @@ export function suggestWiring(){
       const cs = !firstSpi ? take(b.spi.cs) || nextPin(digital) : nextPin(digital);
       if (cs) pairs.push([cs, P('CS')]);
       if (!firstSpi) firstSpi = m;
+      continue;
+    }
+    if (m.type === 'stepper'){
+      const k = nStep++;
+      if (b.step && k < b.step.length) pairs.push([take(b.step[k].pin), P('CLK')]);
+      for (const n of ['CW', 'EN']){ const h = nextPin(digital); if (h) pairs.push([h, P(n)]); }
       continue;
     }
     if (m.type === 'can'){ if (b.can){ pairs.push([take(b.can.tx), P('TXD')], [take(b.can.rx), P('RXD')]); tail.canh = P('CANH'); tail.canl = P('CANL'); } continue; }
@@ -291,11 +297,86 @@ static void ${s}_Read8(${U8} *out)
   return '';
 }
 
+/** 步進馬達：M1 來回移動（梯形加減速），M2 連續轉動（速度跟著旋鈕或定時切換，加速度受限） */
+function stepperCode(b, sdk, mods, sug, c){
+  const { defs, define, pre, drivers, loop, report, stepInit, pinLabel, P } = c;
+  const steppers = mods.filter(m => m.type === 'stepper').slice(0, 2);
+  const pot = mods.find(m => m.type === 'pot');
+  const info = [];
+  steppers.forEach((m, i) => {
+    const nm = `M${i + 1}`, v = variantOf(m.type, m.variant), sig = n => signalMcu(m, n, sug), mo = m.st.mot || { div:16 };
+    const clk = sig('CLK'), k = b.step.findIndex(x => b.header.find(h => h.label === x.pin)?.mcu === clk);
+    const kk = k >= 0 ? k : i;
+    if (sig('CW')) define(`${nm}_DIR`, sig('CW'), `${moduleLabel(m)} CW → ${pinLabel(sig('CW'))}（高電位順時針）`, 'out');
+    if (sig('EN')) define(`${nm}_EN`, sig('EN'), `${moduleLabel(m)} EN → ${pinLabel(sig('EN'))}（高電位啟用）`, 'out');
+    const st = sdk.step(b, kk, nm); stepInit.push(...st.init); drivers.push(st.fn);
+    if (sig('EN')) pre.push(sdk.pin(`${nm}_EN`, 1) + `   // 啟用${moduleLabel(m)}的驅動`);
+    if (sig('CW')) pre.push(sdk.pin(`${nm}_DIR`, 1));
+    defs.push(`#define ${nm}_MICROSTEP${' '.repeat(Math.max(1, 6 - String(i + 1).length))}${mo.div}       // ${moduleLabel(m)} 的 DMODE 指撥開關（要和模組上的設定一樣）`,
+      `#define ${nm}_STEPS_REV    (${Math.round(360 / v.step)} * ${nm}_MICROSTEP)   // ${v.step}° 馬達：一圈 ${Math.round(360 / v.step)} 個全步 × 微步`);
+    info.push({ nm, m, i, dir:!!sig('CW') });
+  });
+  const [a, z] = info;
+  if (a){
+    defs.push(`#define M1_MAX_PPS     (M1_STEPS_REV * 2)   // 最高速度：每秒 2 圈（120 RPM）`, `#define M1_ACCEL       (M1_STEPS_REV * 4)   // 加速度：每秒增加 4 圈／秒 → 0.5 秒加到最高速`, `#define M1_MOVE        (M1_STEPS_REV * 2)   // 每次移動 2 圈`);
+    drivers.push(`// 梯形加減速：每 10 ms 呼叫一次。加速 → 等速 → 在剩下 v²÷(2a) 步的時候開始減速
+float m1Pps = 0.0f;       // 目前送出的 STEP 頻率（pps＝每秒脈波數＝每秒微步數）
+float m1Pos = 0.0f;       // 這次移動已經送出的步數
+int m1Dir = 1;
+int m1Wait = 0;
+
+static void M1_Update(void)
+{
+  if (m1Wait > 0) { m1Wait--; return; }                    // 到點後停一下
+  float remain = M1_MOVE - m1Pos;                          // 還要走幾步
+  float brake = m1Pps * m1Pps / (2.0f * M1_ACCEL);         // 從目前速度減到 0 要走的步數＝v²÷(2a)
+  if (remain <= brake) m1Pps -= M1_ACCEL * 0.01f;          // 該減速了：每 10 ms 減少 a × 0.01 秒
+  else if (m1Pps < M1_MAX_PPS) m1Pps += M1_ACCEL * 0.01f;  // 還沒到最高速：繼續加速
+  if (m1Pps > M1_MAX_PPS) m1Pps = M1_MAX_PPS;
+  if (m1Pps <= 0.0f || m1Pos >= M1_MOVE) {                 // 到了：停止、換方向、休息 0.5 秒
+    M1_SetPps(0);
+    m1Pps = 0.0f;
+    m1Pos = 0.0f;
+    m1Dir = !m1Dir;
+    ${a.dir ? sdk.set('M1_DIR', 'm1Dir') : '// （CW 沒有接，方向不會改變）'}
+    m1Wait = 50;
+    return;
+  }
+  M1_SetPps((uint32_t)m1Pps);
+  m1Pos += m1Pps * 0.01f;                                  // 這 10 ms 送出的步數
+}`);
+    loop.push('M1_Update();');
+  }
+  if (z){
+    defs.push(`#define M2_MAX_PPS     (M2_STEPS_REV * 3)   // 最高速度：每秒 3 圈（180 RPM）`, `#define M2_ACCEL       (M2_STEPS_REV * 2)   // 加速度上限：每秒增加 2 圈／秒`);
+    drivers.push(`// 速度慢慢靠近目標，每 10 ms 最多改變 a × 0.01 秒：這就是 ramp（斜坡）
+float m2Pps = 0.0f;
+float m2Target = M2_MAX_PPS / 3;
+
+static void M2_Update(void)
+{
+  float step = M2_ACCEL * 0.01f;
+  if (m2Pps < m2Target - step) m2Pps += step;
+  else if (m2Pps > m2Target + step) m2Pps -= step;
+  else m2Pps = m2Target;
+  M2_SetPps((uint32_t)m2Pps);
+}`);
+    if (pot){
+      const max = 2 ** b.adcBits - 1;
+      loop.push('if (tick % 10 == 0) {                 // 每 100 ms：旋鈕決定 M2 的目標速度', ...sdk.adc(b).map(l => '  ' + l), `  m2Target = (float)adc * M2_MAX_PPS / ${max}.0f;`, '}');
+    } else loop.push('if (tick % 300 == 0) m2Target = (m2Target > M2_MAX_PPS / 2) ? M2_MAX_PPS / 4 : M2_MAX_PPS;   // 每 3 秒切換快慢');
+    loop.push('M2_Update();');
+  }
+  const line = info.map(x => `${x.nm}：%lu pps（%lu RPM）`).join('，');
+  const args = info.map(x => `(unsigned long)${x.nm.toLowerCase()}Pps, (unsigned long)(${x.nm.toLowerCase()}Pps * 60.0f / ${x.nm}_STEPS_REV)`).join(', ');
+  report.push(`${P}("${line}\\r\\n", ${args});`);
+}
+
 export function exampleCode(){
   const b = bench.board, sdk = sdkFor(b), mods = bench.modules, sug = suggestWiring(), P = sdk.print;
   const U8 = b.sdk === 'c2000' ? 'uint16_t' : 'uint8_t';
   const defs = [], cfg = [], drivers = [], init = [], blink = [], loop = [], report = [], slow = [], vars = ['uint32_t tick = 0;'], ports = new Set();
-  const used = { i2c:mods.some(m => m.type === 'temp'), adc:mods.some(m => m.type === 'pot'), spi:!!b.spi && mods.some(m => SPI_TYPES.includes(m.type)), can:!!b.can && mods.some(m => m.type === 'can') };
+  const used = { i2c:mods.some(m => m.type === 'temp'), adc:mods.some(m => m.type === 'pot'), spi:!!b.spi && mods.some(m => SPI_TYPES.includes(m.type)), can:!!b.can && mods.some(m => m.type === 'can'), step:!!b.step && mods.some(m => m.type === 'stepper') };
   const pre = [], spiDevs = [];
   const name = (m, base) => { const same = mods.filter(x => x.type === m.type); return same.length > 1 ? `${base}${same.indexOf(m) + 1}` : base; };
   const pinLabel = mcu => { const h = b.header.find(x => x.mcu === mcu); return h && h.label !== mcu ? `${h.label}（${mcu}）` : mcu; };
@@ -315,6 +396,7 @@ export function exampleCode(){
 
   const keys = [], pirs = [], buzzers = [], sensors = [];
   let canParts = null;
+  const stepInit = [];
   for (const m of mods){
     const v = variantOf(m.type, m.variant), label = `${moduleLabel(m)}（${v.part}）`, sig = n => signalMcu(m, n, sug);
     if (m.type === 'led' && sig('SIG')){ const nm = name(m, 'LED_EXT'); define(nm, sig('SIG'), `${label} SIG → ${pinLabel(sig('SIG'))}`, 'out'); blink.push(sdk.tog(nm)); }
@@ -367,6 +449,7 @@ export function exampleCode(){
       report.push('{', `  ${U8} d[8];`, `  ${s}_Read8(d);`, `  ${P}("${moduleLabel(m)} 位址 0x000000：%02X %02X %02X %02X %02X %02X %02X %02X（%c%c%c%c%c%c%c%c）\\r\\n", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);`, '}');
     } else report.push('{', `  float t = ${s}_Read();`, '  if (t > -100.0f) {', ...tempLine(moduleLabel(m), 't', null).map(l => '    ' + l), `  } else ${P}("${moduleLabel(m)}：熱電偶沒有接好（斷線）\\r\\n");`, '}');
   }
+  if (used.step) stepperCode(b, sdk, mods, sug, { defs, define, pre, drivers, loop, report, vars, stepInit, pinLabel, P, U8 });
   if (used.can){
     const c = sdk.can(b);
     defs.push('#define CAN_TX_ID      0x123   // MCU 送出的訊框 ID', '#define CAN_RX_ID      0x200   // 收發器模組內建的測試節點送出的 ID');
@@ -397,7 +480,7 @@ export function exampleCode(){
   return `/* main.c — 由模擬器依目前的開發板與模組產生
  * 晶片：${b.mcu}（${b.core}，${b.mhz} MHz）
  * 開發板：${b.name}
- * SDK：${sdk.name}；${P} 經由 ${b.vcp.periph} 輸出到虛擬序列埠（115200 bps）${used.spi ? `\n * SPI：${b.spi.bus}（SCK ${b.spi.sck}、MISO ${b.spi.miso}、MOSI ${b.spi.mosi}）` : ''}${used.can ? `\n * CAN：${b.can.bus}（TX ${b.can.tx}、RX ${b.can.rx}），500 kbps` : ''}
+ * SDK：${sdk.name}；${P} 經由 ${b.vcp.periph} 輸出到虛擬序列埠（115200 bps）${used.spi ? `\n * SPI：${b.spi.bus}（SCK ${b.spi.sck}、MISO ${b.spi.miso}、MOSI ${b.spi.mosi}）` : ''}${used.can ? `\n * CAN：${b.can.bus}（TX ${b.can.tx}、RX ${b.can.rx}），500 kbps` : ''}${used.step ? `\n * 步進馬達：TB67S128FTG（CLK-IN 模式），STEP 由計時器 PWM 產生，每 10 ms 更新一次頻率（梯形加減速）` : ''}
  */
 ${sdk.includes(b, used).join('\n')}
 
@@ -405,7 +488,7 @@ ${defs.join('\n')}
 ${globals.length ? '\n' + globals.join('\n') + '\n' : ''}${i2cCode.length ? '\n' + i2cCode.join('\n\n') + '\n' : ''}${spiCode ? '\n' + spiCode.helper + '\n' : ''}${drivers.length ? '\n' + drivers.join('\n\n') + '\n' : ''}
 int main(void)
 {
-${ind([...sdk.init(b, used, ports), ...(spiCode ? spiCode.init : []), ...(canParts ? canParts.init : [])], 2)}
+${ind([...sdk.init(b, used, ports), ...(spiCode ? spiCode.init : []), ...(canParts ? canParts.init : []), ...stepInit], 2)}
 ${cfg.length ? ind(cfg, 2) + '\n' : ''}${pre.length ? ind(pre, 2) + '\n' : ''}
   ${P}("\\r\\n${b.name} 啟動\\r\\n");
 ${init.length ? ind(init, 2) + '\n' : ''}

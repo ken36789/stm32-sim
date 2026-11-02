@@ -47,7 +47,8 @@ export function analyzeCode(src){
     i2c:/HAL_I2C_|DL_I2C_|_I2C_master|I2CMaster|I2C_sendStartCondition|I2C_MasterStart|LPI2C_Master/.test(code),
     adc:/HAL_ADC_GetValue|DL_ADC12_getMemResult|ADC\w*_getResults|ADCSequenceDataGet|ADC_readResult|ADC16_GetChannelConversionValue|LPADC_GetConvResult|ADC_GetChannelConversion/.test(code),
     spi:/HAL_SPI_|DL_SPI_\w*transmit|_SPI_transmitData|SSIDataPut|SPI_writeData|SPI_MasterTransferBlocking|DSPI_MasterTransfer|LPSPI_MasterTransfer/.test(code),
-    can:/HAL_CAN_AddTxMessage|HAL_FDCAN_AddMessage|DL_MCAN_TXBufAddReq|CANMessageSet|CAN_sendMessage|FLEXCAN_TransferSend|FLEXCAN_WriteTxMb/.test(code) };
+    can:/HAL_CAN_AddTxMessage|HAL_FDCAN_AddMessage|DL_MCAN_TXBufAddReq|CANMessageSet|CAN_sendMessage|FLEXCAN_TransferSend|FLEXCAN_WriteTxMb/.test(code),
+    step:/HAL_TIM_PWM_Start|DL_Timer[GA]_startCounter|Timer_[AB]_outputPWM|PWMGenEnable|EPWM_setTimeBaseCounterMode|FTM_StartTimer|TPM_StartTimer|CTIMER_StartTimer|QTMR_StartTimer/.test(code) };
 }
 
 const railV = node => { const i = netInfo(node); return i.v5 ? 5 : i.v33 ? 3.3 : 0; };
@@ -149,6 +150,24 @@ export function runChecks(src){
         for (const n of ['CANH', 'CANL']){ const i = netInfo(P(n)); if (i.gpio.length || i.v33 || i.v5 || i.gnd) add('err', `${moduleLabel(m)} 的 ${n} 接到開發板或電源`, 'CANH／CANL 是差動匯流排，只能接其他 CAN 節點或 CAN 分析儀，不能接 MCU 腳位或電源。', netPins(P(n))); }
         if (!code.can) add('warn', '程式沒有使用 CAN', '收發器已接好，但程式沒有送出 CAN 訊框。按「載入範例程式」可以看到這顆晶片 SDK 的 CAN 寫法。');
         add('info', `${moduleLabel(m)}：模組內建 120 Ω 終端電阻與測試節點`, '測試節點每 500 ms 送出 ID 0x200，也會對 MCU 送出的訊框回 ACK。把 CAN 分析儀接到 CANH／CANL 就能看到匯流排上的差動訊號。');
+        break;
+      }
+      case 'stepper': {
+        vcc(2, 5.5, 'IOREF 是邏輯電位參考，要接 3V3（和 MCU 相同的電位）。'); gnd();
+        if (!b.step){ add('err', `${b.name} 沒有設定 STEP 輸出`, b.noStep || '這塊板子沒有可以用的計時器 PWM 輸出。', pinsOr(P('CLK'))); }
+        else {
+          const ci = netInfo(P('CLK')), stepAt = ci.gpio.map(g => b.step.findIndex(x => headerPin(x.pin)?.mcu === g)).find(k => k >= 0);
+          const list = b.step.map(x => `${pinName(headerPin(x.pin).mcu)}（${x.tim}）`).join(' 或 ');
+          if (!hasWire(P('CLK'))) add('err', `${moduleLabel(m)} 的 CLK 沒有接`, `CLK（STEP）要接到計時器的 PWM 輸出：${list}。`, [P('CLK')]);
+          else if (stepAt === undefined) add('err', `${moduleLabel(m)} 的 CLK 接到 ${ci.gpio.length ? pinName(ci.gpio[0]) : '非 MCU 腳位'}`, `STEP 脈波很快（每秒上萬個），要由計時器的硬體 PWM 產生，不能用一般 GPIO 慢慢切換。本板的 STEP 輸出在 ${list}。`, netPins(P('CLK')));
+          else {
+            const x = b.step[stepAt], others = bench.modules.filter(o => o !== m && o.type === 'stepper' && netInfo(`${o.id}.CLK`).gpio.includes(headerPin(x.pin).mcu));
+            add('ok', `${moduleLabel(m)} CLK → ${pinName(headerPin(x.pin).mcu)}`, `${x.tim} 的 PWM 輸出，每個脈波前進一個微步。`, netPins(P('CLK')));
+            if (others.length) add('warn', `${moduleLabel(m)} 和 ${others.map(moduleLabel).join('、')} 接在同一個 STEP 輸出`, '兩顆馬達會收到一模一樣的脈波，沒辦法分開控制速度。改接另一組 STEP 輸出。', netPins(P('CLK')));
+            if (!code.step) add('warn', '程式沒有啟動計時器 PWM', 'STEP 腳接好了，但程式沒有開啟計時器的 PWM 輸出，馬達不會轉。按「載入範例程式」可以看到這顆晶片 SDK 的寫法。');
+          }
+        }
+        gpio('CW', 'out'); gpio('EN', 'out');
         break;
       }
       case 'la_i2c': case 'la_uart': case 'la_spi': case 'la_can': {

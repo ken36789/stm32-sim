@@ -6,6 +6,7 @@ import { MODULE_TYPES, MODULE_GROUPS, variantOf, MAX_MODULES } from '../core/par
 import { bench, SIM, moduleLabel, moduleById, moduleState, sensorTemp, supply, isAnalyzer } from '../core/sim.js';
 import { tcTemp, canLink, nodeOfCan, spiDevices, CAN } from '../core/buses.js';
 import { probeSource, probeOk } from '../core/analyzer.js';
+import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo } from '../core/steppers.js';
 
 const GRADE = ['', '入門', '進階', '高階'];
 const RH_DEV = ['sht3x', 'aht20', 'hdc1080'];
@@ -98,6 +99,12 @@ function controls(m, v){
     return `<label class="ctl" for="tcT">熱電偶溫度<input type="range" id="tcT" min="${v.dev === 'max31855' ? -50 : 0}" max="400" value="${t}"><output id="tcTOut">${t} °C</output></label>
       <label class="ctl" for="tcOpen" style="grid-template-columns:auto 1fr">熱電偶斷線<input type="checkbox" id="tcOpen" ${s.open ? 'checked' : ''} style="width:auto;justify-self:start"></label>`;
   }
+  if (m.type === 'stepper'){
+    const mo = motorOf(m);
+    return `<label class="ctl" for="stDiv" style="grid-template-columns:auto 1fr">微步（DMODE）<select id="stDiv">${USTEP.map(d => `<option value="${d}" ${d === mo.div ? 'selected' : ''}>${ustepName(d)} · DMODE ${dmodeBits(d)}</option>`).join('')}</select></label>
+      <label class="ctl" for="stLoad" style="grid-template-columns:auto 1fr">負載<select id="stLoad">${LOADS.map(l => `<option value="${l.id}" ${l.id === mo.load ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+      <button class="btn primary la-open" data-act="stepper" type="button">打開步進馬達示波器（波形、加減速、微步比較）</button>`;
+  }
   if (m.type === 'flash') return `<button class="btn sm" data-act="erase" type="button">整顆抹除（全部變成 0xFF）</button>`;
   if (m.type === 'can'){ const on = nodeOfCan(m).on; return `<button class="btn sm ${on ? '' : 'primary'}" data-act="node" type="button">${on ? '關閉測試節點（看 ACK 錯誤）' : '開啟測試節點'}</button>`; }
   return '';
@@ -153,6 +160,11 @@ export function updateLive(){
     const mem = m.st.mem, bytes = Array.from({ length:16 }, (_, i) => (mem && mem.has(i)) ? mem.get(i) : 0xFF);
     t = `${spiDevices().some(d => d.m === m) ? '已連上 SPI 匯流排' : '目前沒有連上 SPI 匯流排'}\n位址 0x000000：${bytes.map(x => x.toString(16).toUpperCase().padStart(2, '0')).join(' ')}\n（Flash 斷電後資料仍然保留）`;
   }
+  if (m.type === 'stepper'){
+    const i = motorInfo(m);
+    t = !i.ok ? '驅動模組沒有供電（VCC 接 3V3、GND 接地）' : i.src === 'manual' ? '示波器的手動測試正在控制這顆馬達' : !i.en ? 'ENABLE 是低電位：馬達沒有送電' : i.k < 0 ? 'CLK 沒有接到計時器的 PWM（STEP）腳' : i.pps ? `STEP ${Math.round(i.pps)} pps，${i.dir > 0 ? '順時針' : '逆時針'}` : '已送電，停住不動（保持轉矩）';
+    t += `\n轉速約 ${Math.abs(i.rpm).toFixed(1)} RPM，位置 ${i.revs.toFixed(2)} 圈\n${ustepName(i.div)}：每個脈波 ${i.stepDeg.toFixed(4)}°，一圈 ${i.perRev} 個脈波${i.lost ? `\n失步：少走了 ${Math.abs(i.lost)} 個全步` : ''}`;
+  }
   if (m.type === 'can'){
     const L = canLink(), n = nodeOfCan(m), last = n.rx[n.rx.length - 1];
     t = !L.powered ? '收發器沒有供電（檢查 VCC 電壓與 GND）' : !L.ok ? `${!bench.board.can ? '這顆晶片沒有 CAN 控制器' : !L.txOk ? 'TXD 沒有接到 MCU 的 CAN_TX' : 'RXD 沒有接到 MCU 的 CAN_RX'}` : `測試節點：${n.on ? '開啟' : '關閉'}，已送出 ${n.cnt} 筆 ID 0x200`;
@@ -179,6 +191,7 @@ export function initInspector(actions){
       case 'add': act.addModule(b.dataset.type); break;
       case 'warm': act.warm(insp.id); break;
       case 'analyzer': act.openAnalyzer(insp.id); break;
+      case 'stepper': act.openStepper(insp.id); break;
       case 'erase': act.eraseFlash(insp.id); break;
       case 'node': act.setNode(insp.id, !nodeOfCan(moduleById(insp.id)).on); break;
       case 'motion': act.motion(insp.id); break;
@@ -191,6 +204,10 @@ export function initInspector(actions){
     if (e.target.id === 'ambRH'){ SIM.ambient.RH = +e.target.value; $('#ambRHOut').textContent = SIM.ambient.RH + ' %'; act.changed(); }
     if (e.target.id === 'tcT'){ $('#tcTOut').textContent = e.target.value + ' °C'; act.setTc(insp.id, 'tcT', +e.target.value); }
     if (e.target.id === 'tcOpen') act.setTc(insp.id, 'open', e.target.checked);
+  });
+  el.addEventListener('change', e => {
+    if (e.target.id === 'stDiv') act.setStep(insp.id, 'div', +e.target.value);
+    if (e.target.id === 'stLoad') act.setStep(insp.id, 'load', +e.target.value);
   });
   const hold = (down, e) => { if (e.target.id !== 'holdBtn') return; e.preventDefault(); if (down) try { e.target.setPointerCapture(e.pointerId); } catch (_){} act.press(insp.id, down); };
   el.addEventListener('pointerdown', e => hold(true, e));
