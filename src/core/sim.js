@@ -13,7 +13,7 @@ let wireSeq = 0, modSeq = 0;
 
 /** 網路節點中，除了電源、地、電源軌與模組腳位以外的都是 MCU 腳位（PA5、P1.0、PTB22、GPIO31、PIO1_4…） */
 export const isGpioName = s => !['3V3', '5V', 'GND', 'RAIL+', 'RAIL-'].includes(s) && !/^M\d+\./.test(s);
-const freshState = () => ({ pressed:false, pot:.42, motionUntil:0, boost:0, damaged:false, dev:null, tcT:null, open:false });
+const freshState = () => ({ pressed:false, pot:.42, motionUntil:0, boost:0, damaged:false, dev:null, tcT:null, open:false, on:true });
 export const isAnalyzer = m => /^la_/.test(m.type);
 /** 工作台上有邏輯分析儀時才記錄訊號 */
 const syncTrace = () => setTrace(bench.modules.some(isAnalyzer));
@@ -78,13 +78,23 @@ export function setBoard(id, quiet){
   if (!quiet) hooks.benchChanged();
   return before - wires.length;
 }
+/* 工作台位置：12 格。驅動板這種大模組佔前後相鄰的兩格（0+2、1+3、4+6、5+7、8+9、10+11） */
+export const slotPartner = s => s < 8 ? (s % 4 < 2 ? s + 2 : -1) : (s % 2 === 0 ? s + 1 : -1);
+function findSlot(big, want){
+  const used = new Set(); for (const m of bench.modules){ used.add(m.slot); if (m.slot2 !== undefined) used.add(m.slot2); }
+  const ok = s => s >= 0 && s < MAX_MODULES && !used.has(s) && (!big || (slotPartner(s) >= 0 && !used.has(slotPartner(s))));
+  if (want !== undefined && ok(want)) return want;
+  for (let s = 0; s < MAX_MODULES; s++) if (ok(s)) return s;
+  return -1;
+}
+export const canPlace = type => bench.modules.length < MAX_MODULES && findSlot(!!MODULE_TYPES[type]?.big) >= 0;
 export function addModule(type, variant, quiet, fixed){
   if (bench.modules.length >= MAX_MODULES || !MODULE_TYPES[type]) return null;
-  const used = new Set(bench.modules.map(m => m.slot)); let slot = 0; while (used.has(slot)) slot++;
-  if (fixed && fixed.slot >= 0 && fixed.slot < MAX_MODULES && !used.has(fixed.slot)) slot = fixed.slot;
+  const big = !!MODULE_TYPES[type].big, slot = findSlot(big, fixed ? fixed.slot : undefined);
+  if (slot < 0) return null;
   let id = 'M' + (++modSeq);
   if (fixed && /^M\d+$/.test(fixed.id) && !moduleById(fixed.id)){ id = fixed.id; modSeq = Math.max(modSeq, +id.slice(1)); }
-  const m = { id, type, variant:variantOf(type, variant).id, slot, st:freshState() };
+  const m = { id, type, variant:variantOf(type, variant).id, slot, ...(big ? { slot2:slotPartner(slot) } : {}), st:freshState() };
   bench.modules.push(m); rebuildPins(); syncTrace();
   if (!quiet) hooks.benchChanged();
   return m;
@@ -102,8 +112,11 @@ export function setVariant(id, vid){
 export function resetBench(){ wires.forEach(w => hooks.wireRemoved(w)); wires = []; bench.modules = []; modSeq = 0; rebuildPins(); NET = netMap(); syncTrace(); }
 
 /* ---------- 杜邦線 ---------- */
+// 馬達線常見的顏色：A+ 黑、A− 綠、B+ 紅、B− 藍；馬達電源 V+／VIN 紅、V−／PGND 黑
+const COIL_COLOR = { 'A+':'black', 'A-':'green', 'B+':'red', 'B-':'blue', 'V+':'red', VIN:'red', 'V-':'black', PGND:'black' };
 export function autoColor(a, b){
   const n = [PINS[a].name, PINS[b].name];
+  if (PINS[a].kind === 'mod' && PINS[b].kind === 'mod'){ const c = COIL_COLOR[n[0]] || COIL_COLOR[n[1]]; if (c) return c; }
   if (n.some(x => x === '3V3' || x === '5V' || x === 'VCC' || x === '+')) return 'red';
   if (n.some(x => x === 'GND' || x === '-')) return 'black';
   if (n.includes('SCL')) return 'yellow';
@@ -119,7 +132,8 @@ export function addWire(a, b, color, quiet){
   if (a === b){ hooks.toast('起點和終點是同一支腳位。'); return false; }
   if (wires.some(w => (w.a === a && w.b === b) || (w.a === b && w.b === a))){ hooks.toast('這兩支腳已經接在一起了。'); return false; }
   for (const p of [a, b]) if (wiresOf(p).length >= maxWires(p)){ hooks.toast(maxWires(p) > 1 ? `${PINS[p].label} 已經插了兩條線。` : `${PINS[p].label} 已經插了一條杜邦線，先拔除再接。`); return false; }
-  if (PINS[a].kind === 'mod' && PINS[a].group === PINS[b].group){ hooks.toast('同一個模組的兩支腳不需要互接，這會讓它短路。'); return false; }
+  const tieOk = PINS[a].kind === 'mod' && (MODULE_TYPES[moduleById(PINS[a].group)?.type]?.tie || []).some(([x, y]) => [x, y].sort().join() === [PINS[a].name, PINS[b].name].sort().join());
+  if (PINS[a].kind === 'mod' && PINS[a].group === PINS[b].group && !tieOk){ hooks.toast('同一個模組的兩支腳不需要互接，這會讓它短路。'); return false; }
   const w = { id:++wireSeq, a, b, color:color || autoColor(a, b), bend:(Math.random() * 2 - 1) * 3.2 };
   wires.push(w); hooks.wireAdded(w);
   if (!quiet) hooks.afterWiring();
@@ -137,7 +151,10 @@ function pruneWires(){ [...wires].filter(w => !PINS[w.a] || !PINS[w.b]).forEach(
 export function netMap(){
   const parent = {};
   const f = k => { if (!(k in parent)) parent[k] = k; while (parent[k] !== k){ parent[k] = parent[parent[k]]; k = parent[k]; } return k; };
-  for (const w of wires){ const a = f(nodeOf(w.a)), b = f(nodeOf(w.b)); if (a !== b) parent[a] = b; }
+  const join = (x, y) => { const a = f(x), b = f(y); if (a !== b) parent[a] = b; };
+  for (const w of wires) join(nodeOf(w.a), nodeOf(w.b));
+  // 模組板上本來就相通的腳（例如驅動板左右兩側的 GND）
+  for (const m of bench.modules) for (const [a, b] of MODULE_TYPES[m.type].bridge || []) join(`${m.id}.${a}`, `${m.id}.${b}`);
   const groups = {}; for (const k of Object.keys(parent)){ const r = f(k); (groups[r] = groups[r] || []).push(k); }
   return { f, groups };
 }
@@ -145,25 +162,60 @@ export function refreshNet(){ NET = netMap(); return NET; }
 export function net(k){ return NET.groups[NET.f(k)] || [k]; }
 export function netInfo(k){
   const m = net(k);
-  return { m, v33:m.includes('3V3'), v5:m.includes('5V'), gnd:m.includes('GND'), gpio:m.filter(isGpioName), mods:m.filter(x => /^M\d+\./.test(x)) };
+  return { m, v33:m.includes('3V3'), v5:m.includes('5V'), gnd:m.includes('GND'), gpio:m.filter(isGpioName), mods:m.filter(x => /^M\d+\./.test(x)), src:netSource(m) };
+}
+
+/* ---------- 模組上的電源：馬達電源（DC 變壓器）與驅動板的 5 V 輸出 ---------- */
+const modOfPin = pid => moduleById(pid.split('.')[0]);
+/** 變壓器的輸出電壓：關閉，或 V+ 直接碰到地（短路保護）時是 0 */
+export function psuOut(m){
+  if (!m || m.type !== 'psu' || m.st.on === false) return 0;
+  const n = net(`${m.id}.V+`);
+  if (n.includes('GND') || n.includes(`${m.id}.V-`)) return 0;
+  return variantOf(m.type, m.variant).v;
+}
+/** 驅動板 VIN 的電壓：要有電源的負極接到驅動板的地，電流才有回路 */
+export function drvVin(m){
+  const vin = net(`${m.id}.VIN`), gnd = new Set(net(`${m.id}.PGND`)); let v = 0;
+  for (const p of vin){
+    if (/\.V\+$/.test(p)){ const pm = modOfPin(p); if (pm?.type === 'psu' && gnd.has(`${pm.id}.V-`)) v = Math.max(v, psuOut(pm)); }
+    if (SIM.usb && gnd.has('GND') && (p === '5V' || p === '3V3')) v = Math.max(v, p === '5V' ? 5 : 3.3);
+  }
+  return v;
+}
+export const drvVcc = m => !m.st.damaged && drvVin(m) >= 6 ? 5 : 0;
+/** 網路上模組電源的最高電壓（0＝沒有） */
+function netSource(ms){
+  let v = 0;
+  for (const p of ms){
+    if (/\.V\+$/.test(p)) v = Math.max(v, psuOut(modOfPin(p)));
+    else if (/\.VCC$/.test(p)){ const m = modOfPin(p); if (m?.type === 'tb67') v = Math.max(v, drvVcc(m)); }
+  }
+  return v;
 }
 export function shorts(){
   const out = [];
   for (const ms of Object.values(NET.groups)){
-    const s = new Set(ms);
+    const s = new Set(ms), hv = ms.filter(p => /\.V\+$/.test(p) && modOfPin(p)?.type === 'psu' && modOfPin(p).st.on !== false);
     if ((s.has('3V3') || s.has('5V')) && s.has('GND')) out.push({ type:'gnd', ms });
     else if (s.has('3V3') && s.has('5V')) out.push({ type:'rails', ms });
+    if (hv.length && (s.has('3V3') || s.has('5V') || ms.some(isGpioName))) out.push({ type:'hv', ms, psu:modOfPin(hv[0]) });
+    else if (hv.length && (s.has('GND') || hv.some(p => s.has(p.replace('V+', 'V-'))))) out.push({ type:'psu', ms, psu:modOfPin(hv[0]) });
   }
   return out;
 }
-export const powered = () => SIM.usb && shorts().length === 0;
-export function supply(node){ if (!powered()) return 0; const i = netInfo(node); return i.v5 ? 5 : i.v33 ? 3.3 : 0; }
+/** 開發板有電：USB 接上，而且沒有會讓板子斷電的短路（變壓器自己的短路保護不影響開發板） */
+export const powered = () => SIM.usb && !shorts().some(x => x.type !== 'psu');
+export function supply(node){ const i = netInfo(node); if (i.src) return i.src; if (!powered()) return 0; return i.v5 ? 5 : i.v33 ? 3.3 : 0; }
 export const hasGnd = node => netInfo(node).gnd;
 const pinOf = (m, n) => `${m.id}.${n}`;
 
+/** 其他檔案（例如驅動板的 LO0／LO1）登記的輸出腳：回傳 1、0，或 null／undefined 表示不是它的腳 */
+export const driveHooks = [];
 /** 模組輸出腳的電位（按鈕、PIR），沒有驅動時回傳 null */
 function moduleDrive(pinId){
   const [id, n] = pinId.split('.'); const m = moduleById(id); if (!m) return null;
+  for (const h of driveHooks){ const v = h(m, n); if (v !== null && v !== undefined) return v; }
   if (m.type === 'button' && n === 'OUT') return supply(pinOf(m, 'VCC')) && hasGnd(pinOf(m, 'GND')) ? (m.st.pressed ? 1 : 0) : null;
   if (m.type === 'pir' && n === 'OUT'){
     const v = supply(pinOf(m, 'VCC')); if (!v || !hasGnd(pinOf(m, 'GND'))) return null;
@@ -173,13 +225,16 @@ function moduleDrive(pinId){
 }
 /** 某個節點所在網路的邏輯電位：1、0，或浮接 null。exclude 是正在讀取的 GPIO 本身 */
 export function level(node, exclude){
-  if (!powered()) return null;
   const i = netInfo(node);
+  if (i.src) return 1;                                   // 馬達電源或驅動板的 5 V 輸出
+  if (!powered()) return null;
   if (i.v33 || i.v5) return 1;
   if (i.gnd) return 0;
   for (const g of i.gpio) if (g !== exclude && SIM.mode[g] === 'out') return SIM.out[g] ? 1 : 0;
-  for (const mp of i.mods){ const v = moduleDrive(mp); if (v !== null) return v; }
-  return null;
+  // 模組輸出：任何一個拉低就是低電位（開汲極輸出可以並接，例如驅動板的 LO0 和 LO1）
+  let drive = null;
+  for (const mp of i.mods){ const v = moduleDrive(mp); if (v === 0) return 0; if (v === 1) drive = 1; }
+  return drive;
 }
 export function readPin(p){
   const b = bench.board;
@@ -250,8 +305,14 @@ export function i2cFind(addr7){
 }
 
 /** 接線或供電改變後檢查會損壞的元件，回傳新損壞的模組 */
+export const TB67_LOGIC = ['IOREF', 'STBY', 'EN', 'RST', 'CLK', 'DIR', 'MODE0', 'MODE1', 'MODE2', 'LO0', 'LO1'];
 export function checkDamage(){
   const out = [];
+  // 驅動板的邏輯腳最高 5.5 V：接到馬達電源（12／24 V）會燒掉
+  for (const m of bench.modules){
+    if (m.type !== 'tb67' || m.st.damaged) continue;
+    if (TB67_LOGIC.some(n => netInfo(pinOf(m, n)).src > 5.5)){ m.st.damaged = true; out.push(m); }
+  }
   if (!powered()) return out;
   for (const m of bench.modules){
     if (m.type !== 'temp' || m.st.damaged) continue;

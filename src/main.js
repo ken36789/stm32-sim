@@ -4,13 +4,13 @@ import * as THREE from 'three';
 import { BOARD_BY_ID, DEFAULT_BOARD, boardParts } from './core/boards.js';
 import { MODULE_TYPES, variantOf, DEFAULT_MODULES, MAX_MODULES } from './core/parts.js';
 import { hooks } from './core/hooks.js';
-import { SIM, bench, PINS, PIN_ORDER, wires, addWire, removeWire, clearWires, wireOf, refreshNet, powered, readPin, moduleState, boardLedOn, i2cDevices, sensorTemp,
+import { SIM, bench, PINS, PIN_ORDER, wires, shorts, addWire, removeWire, clearWires, wireOf, refreshNet, powered, readPin, moduleState, boardLedOn, i2cDevices, sensorTemp,
   checkDamage, tickSim, setBoard, addModule, removeModule, setVariant, moduleById, moduleLabel, resetBench, isAnalyzer } from './core/sim.js';
 import { canPoll, canModule, nodeOfCan } from './core/buses.js';
 import { analyzerActive } from './core/analyzer.js';
 import { initAnalyzer, openAnalyzer, analyzerBenchChanged } from './ui/analyzer.js';
 import { initStepper, openStepper, stepperBenchChanged } from './ui/stepper.js';
-import { isStepper, stepperTick, motorInfo, motorOf, setDiv, setLoad, ustepName, dmodeBits, LOADS } from './core/steppers.js';
+import { isStepper, isDriver, stepperTick, motorInfo, motorOf, setDiv, setLoad, ustepName, dmodeBits, LOADS, drvOf, drvStatus, coilMap, divSource, FAULTS } from './core/steppers.js';
 import { runChecks } from './core/checks.js';
 import { startProgram, stopProgram, isRunning } from './core/runtime.js';
 import { suggestWiring, exampleCode } from './core/codegen.js';
@@ -23,13 +23,13 @@ import { ta, syncEditor, codeValue, log, editorEvents } from './ui/editor.js';
 import { serialOut, serialSys, pushLine } from './ui/serial.js';
 import { setRun, updatePills, updateButtons } from './ui/status.js';
 import { build, flash } from './ui/build.js';
-import { initInspector, renderInspector, showInspector, updateLive } from './ui/inspector.js';
+import { initInspector, renderInspector, showInspector, updateLive, insp } from './ui/inspector.js';
 
 function wireHooks(){
   Object.assign(hooks, {
     toast, afterWiring,
-    wireAdded: w => buildWireMesh(w),
-    wireRemoved: w => { disposeWireMesh(w); if (UI.selWire === w) selectWire(null); },
+    wireAdded: w => { buildWireMesh(w); hotPlug(w); },
+    wireRemoved: w => { disposeWireMesh(w); if (UI.selWire === w) selectWire(null); hotPlug(w); },
     outputs: () => outputsChanged(), serial: serialOut, sys: serialSys, run: setRun,
     sensorDamaged: () => outputsChanged(), recheck: () => doCheck(), benchChanged: onBenchChanged,
   });
@@ -124,7 +124,7 @@ function renderBoardInfo(){
 }
 let wideBench = false;
 function onBenchChanged(){
-  if (G.ready){ buildBench(); setUsbVisible(SIM.usb); const wide = bench.modules.some(m => m.slot >= 8); if (wide !== wideBench){ wideBench = wide; fitView(); } }
+  if (G.ready){ buildBench(); setUsbVisible(SIM.usb); const wide = bench.modules.some(m => m.slot >= 8 || m.slot2 >= 8); if (wide !== wideBench){ wideBench = wide; fitView(); } }
   fillSelects(); renderPinMap(); renderBoardInfo(); renderInspector(); analyzerBenchChanged(); stepperBenchChanged();
   afterWiring();
 }
@@ -141,10 +141,24 @@ const ACTIONS = {
   changeBoard,
   setVariant:(id, vid) => { const m = moduleById(id); if (!m || m.variant === vid) return; setVariant(id, vid); showInspector('module', id); toast(`${moduleLabel(m)} 已換成 ${variantOf(m.type, vid).name}。`); },
   removeModule:id => { const m = moduleById(id); if (!m) return; const name = moduleLabel(m); removeModule(id); showInspector('overview'); toast(`已移除 ${name}。`); },
-  addModule:type => { const m = addModule(type); if (!m){ toast(`工作台最多放 ${MAX_MODULES} 個模組。`); return; } showInspector('module', m.id); markModule(m.id); toast(isAnalyzer(m) ? `已新增 ${moduleLabel(m)}。按「建議接線」接好探棒後，點 3D 畫面上的分析儀就能看波形。` : `已新增 ${moduleLabel(m)}。到「接線」分頁按「建議接線」可以自動接好。`); },
+  addModule:type => {
+    const m = addModule(type);
+    if (!m){ toast(bench.modules.length >= MAX_MODULES ? `工作台最多放 ${MAX_MODULES} 個模組。` : '工作台沒有前後相連的兩格空位：驅動板比較大，要佔兩格。先移除一個模組。'); return; }
+    showInspector('module', m.id); markModule(m.id);
+    toast(isAnalyzer(m) ? `已新增 ${moduleLabel(m)}。按「建議接線」接好探棒後，點 3D 畫面上的分析儀就能看波形。`
+      : isDriver(m) ? `已新增 ${moduleLabel(m)}。下面的接線表列出每一支腳該接哪裡；還需要「步進馬達」和「馬達電源」。`
+      : `已新增 ${moduleLabel(m)}。到「接線」分頁按「建議接線」可以自動接好。`);
+  },
   openAnalyzer:id => openAnalyzer(id),
   openStepper:id => openStepper(id),
-  setStep:(id, k, v) => { const m = moduleById(id); if (!m) return; if (k === 'div'){ setDiv(m, v); toast(`${moduleLabel(m)}：微步改成 ${ustepName(v)}（DMODE ${dmodeBits(v)}）。程式不用重新燒錄，但 pps 不變時轉速會跟著改變。`); } else { setLoad(m, v); toast(`${moduleLabel(m)}：負載換成${LOADS[v].name}。`); } stepperChanged(); },
+  setStep:(id, k, v) => {
+    const m = moduleById(id); if (!m) return;
+    if (k === 'div'){ if (setDiv(m, v)) toast(`${moduleLabel(m)}：微步改成 ${ustepName(v)}（MODE2..0 ＝ ${dmodeBits(v)}）。程式不用重新燒錄，但 pps 不變時轉速會跟著改變。`); else toast(divSource(m).how, 'err'); }
+    else if (k === 'load'){ setLoad(m, v); toast(`${moduleLabel(m)}：負載換成${LOADS[v].name}。`); }
+    else if (k === 'vref'){ drvOf(m).vref = v; updateLive(); store(); return; }   // 拖曳滑桿時不要重畫面板
+    else if (k === 'psu'){ m.st.on = !!v; refreshNet(); electricalUpdate(); toast(v ? `${moduleLabel(m)} 已打開（${variantOf(m.type, m.variant).v} V）。` : `${moduleLabel(m)} 已關閉：驅動板斷電，鎖住的錯誤會清除。`); }
+    stepperChanged();
+  },
   setTc:(id, k, v) => { const m = moduleById(id); if (m){ m.st[k] = v; outputsChanged(); } },
   setNode:(id, on) => { const m = moduleById(id); if (m){ nodeOfCan(m).on = on; renderInspector(); toast(on ? '測試節點已開啟：會回 ACK，並每 500 ms 送出 ID 0x200。' : '測試節點已關閉：MCU 送出的訊框沒有人回 ACK。用 CAN 分析儀看看會發生什麼事。'); } },
   eraseFlash:id => { const m = moduleById(id); if (m){ m.st.mem = new Map(); renderInspector(); toast('Flash 已全部抹除成 0xFF。'); } },
@@ -153,6 +167,7 @@ const ACTIONS = {
   setPot:(id, v) => { const m = moduleById(id); if (m){ m.st.pot = v; outputsChanged(); } },
   changed:() => outputsChanged(),
   focusModule:id => markModule(id),
+  markPin:id => { if (PINS[id]) markPins([id], 0xe7894b, 2500); },
   focusPart:() => {},
 };
 function markModule(id){ const m = moduleById(id); if (m) markPins(MODULE_TYPES[m.type].pins.map(p => `${m.id}.${p[0]}`), 0xe7894b, 2500); }
@@ -226,7 +241,7 @@ function onPick(h){
   if (!h){ if (UI.sel || UI.selWire){ UI.sel = null; selectWire(null); refreshRings(); renderHint(); } return; }
   if (h.type === 'usb'){ setUsb(!SIM.usb); return; }
   if (h.type === 'part'){ openInspector('part', h.key); return; }
-  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); if (m && isStepper(m)) openStepper(h.id); return; }
+  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); if (m && isStepper(m)) openStepper(h.id); return; }   // 驅動板、電源：在「元件」分頁看接線表與設定
   if (h.type === 'touch'){ const m = moduleById(h.id); if (m?.type === 'pir') triggerMotion(h.id); else if (m) warmSensor(h.id); return; }
   if (h.type === 'wire'){ UI.sel = null; refreshRings(); renderHint(); selectWire(h.w); return; }
   if (h.type !== 'pin') return;
@@ -245,10 +260,24 @@ function tipFor(h){
   if (h.type === 'wire') return `<b>${esc(PINS[h.w.a].label)} → ${esc(PINS[h.w.b].label)}</b>\n點一下可拔除`;
   if (h.type === 'usb') return `<b>USB（${esc(b.prog)}）</b>\n點一下${SIM.usb ? '拔除' : '接上'}`;
   if (h.type === 'part'){ const p = boardParts(b).find(x => x.key === h.key); return `<b>${esc(p?.part || '')}</b>\n${esc(p?.name || '')}\n點一下查看資料與 datasheet`; }
-  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : isStepper(m) ? `${stepperTip(m)}\n點一下打開步進馬達示波器` : '點一下查看資料、更換型號'}` : ''; }
+  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : isStepper(m) ? `${stepperTip(m)}\n點一下打開步進馬達示波器` : isDriver(m) ? `${driverTip(m)}\n點一下看每一支腳的接法` : m.type === 'psu' ? `${variantOf(m.type, m.variant).v} V · 開關${m.st.on === false ? '關' : '開'}\n點一下查看與開關電源` : '點一下查看資料、更換型號'}` : ''; }
   if (h.type === 'press'){ if (h.which === 'B1') return `<b>${esc(b.btn.name)}</b>（${esc(b.btn.pin)}）\n按住＝按下`; if (h.which === 'RESET') return '<b>RESET</b>\n按下後放開會重新執行程式'; const m = moduleById(h.which); return m ? `<b>${esc(moduleLabel(m))}</b>\n按住＝OUT 高電位` : ''; }
   if (h.type === 'touch'){ const m = moduleById(h.id); return !m ? '' : m.type === 'pir' ? `<b>${esc(moduleLabel(m))}</b>\n點一下模擬有人經過` : `<b>${esc(moduleLabel(m))}</b>\n約 ${sensorTemp(m).toFixed(2)} °C\n點一下模擬手指加溫`; }
   return '';
+}
+function driverTip(m){
+  const st = drvStatus(m), f = drvOf(m).fault;
+  return f ? `錯誤：${FAULTS[f].name}` : !st.vmOk ? `VIN ${st.vm} V（要 6.5–44 V）` : !st.gndMcu ? '沒有和 MCU 共地' : !st.stby ? 'STANDBY 低電位（待機）' : !st.en ? 'ENABLE 低電位（輸出關閉）' : `運作中 · ${ustepName(st.div)} · ${st.ilim.toFixed(2)} A · ${drvOf(m).temp.toFixed(0)} °C`;
+}
+/** 驅動板通電時插拔馬達線：真的驅動 IC 可能會被感應電壓打壞（Pololu 的警告） */
+let hotPlugT = 0;
+function hotPlug(w){
+  if (performance.now() - hotPlugT < 4000) return;
+  for (const id of [w.a, w.b]){
+    const [mid, n] = id.split('.'), m = moduleById(mid); if (!m || !['A+', 'A-', 'B+', 'B-'].includes(n)) continue;
+    const d = isDriver(m) ? m : m.type === 'motor' ? coilMap(m).drv || bench.modules.find(x => isDriver(x) && wires.some(ww => [ww.a, ww.b].includes(`${x.id}.${n}`))) : null;
+    if (d && drvStatus(d).out){ hotPlugT = performance.now(); toast('注意：驅動板通電時插拔馬達線，真的驅動 IC 可能會燒毀。先關掉馬達電源（或拉低 ENABLE）再接線。', 'err'); return; }
+  }
 }
 function stepperTip(m){ const i = motorInfo(m); return `${ustepName(i.div)} · ${Math.round(i.pps)} pps · ${Math.abs(i.rpm).toFixed(0)} RPM${i.lost ? ` · 失步 ${Math.abs(i.lost)} 步` : ''}`; }
 function setHover(h, e){
@@ -290,12 +319,16 @@ function setupPointer(){
 
 /* ---- 電源、輸出與聲音 ---- */
 let wasPowered = null;
-function afterWiring(){ refreshNet(); const sig = hwSig(); if (sig !== UI.hwSig){ UI.hwSig = sig; hwChanged(); } else renderFlow(); electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store(); }
+function afterWiring(){
+  refreshNet(); const sig = hwSig(); if (sig !== UI.hwSig){ UI.hwSig = sig; hwChanged(); } else renderFlow();
+  electricalUpdate(); renderWireList(); refreshRings(); renderHint(); if (UI.checked) doCheck(true); refreshExample(); store();
+  const im = insp.view === 'module' ? moduleById(insp.id) : null; if (im && ['tb67', 'motor', 'psu'].includes(im.type)) renderInspector();   // 接線表、接線圖跟著更新
+}
 function electricalUpdate(){
   const p = powered();
   for (const m of checkDamage()) toast(`${moduleLabel(m)}（${variantOf(m.type, m.variant).part}）的電壓過高，已損壞（模擬）。改好接線後到「檢測」更換。`, 'err');
   if (wasPowered !== null && p !== wasPowered){
-    if (!p){ stopProgram(true); outputsReset(); setRun(SIM.flashed ? 'off' : 'idle'); toast(SIM.usb ? '短路！USB 過電流保護啟動，開發板斷電。' : 'USB 已拔除，開發板斷電。', SIM.usb ? 'err' : ''); }
+    if (!p){ stopProgram(true); outputsReset(); setRun(SIM.flashed ? 'off' : 'idle'); toast(SIM.usb ? (shorts().some(x => x.type === 'hv') ? '馬達電源（12／24 V）接到開發板！真的開發板會燒毀，模擬器先切斷電源。改好接線就會恢復。' : '短路！USB 過電流保護啟動，開發板斷電。') : 'USB 已拔除，開發板斷電。', SIM.usb ? 'err' : ''); }
     else { toast('開發板通電。'); if (canRun()) startProgram(); else setRun(SIM.flashed ? 'stale' : 'idle'); }
   }
   wasPowered = p; outputsChanged(); updatePills();
@@ -340,6 +373,8 @@ function applyOutputs(){
     setLed('PWR', p); bench.board.leds.forEach(l => setLed(l.name, boardLedOn(l)));
     for (const m of bench.modules){
       if (isStepper(m)) continue;                                  // 步進馬達每一格畫面都更新（見 loop）
+      if (isDriver(m)){ const st = drvStatus(m), ds = drvOf(m); updateModule(m, { fault:ds.fault, vmOk:st.vmOk && !st.damaged, temp:ds.temp, vref:ds.vref, bits:dmodeBits(st.div), modeWired:st.modeWired, damaged:st.damaged }, t); continue; }
+      if (m.type === 'psu'){ updateModule(m, { on:m.st.on !== false }, t); continue; }
       const s = isAnalyzer(m) ? { active:p && analyzerActive(m) } : m.type === 'can' ? { on:!!m.st.node?.on && p } : moduleState(m); updateModule(m, s, t);
       if (m.type === 'buzzer' && s.on) buzz = true;
       if (m.type === 'relay'){ if (audio.relays[m.id] !== undefined && audio.relays[m.id] !== s.on) relayClick(); audio.relays[m.id] = s.on; }
@@ -382,7 +417,7 @@ const KEY = 'stm32-sim-v2';
 let storeTimer;
 function store(){
   clearTimeout(storeTimer);
-  storeTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ board:bench.board.id, modules:bench.modules.map(m => ({ id:m.id, type:m.type, variant:m.variant, slot:m.slot, ...(isStepper(m) ? { div:motorOf(m).div, load:motorOf(m).load } : {}) })), wires:wires.map(w => [w.a, w.b, w.color]), code:ta.value, example:isExampleCode(), tab:UI.tab, sound:audio.enabled })); } catch (_){} }, 300);
+  storeTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify({ board:bench.board.id, modules:bench.modules.map(m => ({ id:m.id, type:m.type, variant:m.variant, slot:m.slot, ...(isStepper(m) ? { div:motorOf(m).jdiv, load:motorOf(m).load } : {}), ...(isDriver(m) ? { jdiv:drvOf(m).jdiv, vref:drvOf(m).vref } : {}), ...(m.type === 'psu' ? { on:m.st.on !== false } : {}) })), wires:wires.map(w => [w.a, w.b, w.color]), code:ta.value, example:isExampleCode(), tab:UI.tab, sound:audio.enabled })); } catch (_){} }, 300);
 }
 function restore(){ try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (_){ return null; } }
 
@@ -432,7 +467,7 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
   const saved = restore();
   resetBench();
   setBoard(saved && BOARD_BY_ID[saved.board] ? saved.board : DEFAULT_BOARD, true);
-  if (saved && Array.isArray(saved.modules)) saved.modules.forEach(s => { const m = MODULE_TYPES[s.type] && addModule(s.type, s.variant, true, s); if (m && isStepper(m)){ if (s.div) setDiv(m, s.div); if (s.load !== undefined) setLoad(m, s.load); } });
+  if (saved && Array.isArray(saved.modules)) saved.modules.forEach(s => { const m = MODULE_TYPES[s.type] && addModule(s.type, s.variant, true, s); if (m && m.type === 'stepper' && s.div) setDiv(m, s.div); if (m && isStepper(m) && s.load !== undefined) setLoad(m, s.load); if (m && isDriver(m)){ if (s.jdiv) drvOf(m).jdiv = s.jdiv; if (s.vref) drvOf(m).vref = s.vref; } if (m && m.type === 'psu' && s.on === false) m.st.on = false; });
   else DEFAULT_MODULES.forEach(m => addModule(m.type, m.variant, true));
   renderHint(); renderBoardInfo();
   log('按「編譯並燒錄」把 main.c 寫進開發板的 Flash。快捷鍵 Ctrl/⌘ + S。', 'ld');

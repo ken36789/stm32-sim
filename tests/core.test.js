@@ -354,3 +354,88 @@ test('大飛輪：沒有加減速直接跳到 300 RPM 會失步；用加減速�
   assert.ok(Math.abs(i.revs - 1) < .02, `走了 ${i.revs} 圈`);
   assert.equal(motorOf(m2).manual.done, true);
 });
+
+/* ---------- TB67S128FTG 驅動板（分開接線：驅動板＋馬達＋馬達電源） ---------- */
+import { drvStatus, drvOf, coilMap } from '../src/core/steppers.js';
+import { wires, removeWire, checkDamage, shorts, net } from '../src/core/sim.js';
+const FULL = [{ type:'tb67' }, { type:'motor' }, { type:'psu' }];
+const W = (a, b) => wires.find(w => (w.a === a && w.b === b) || (w.a === b && w.b === a));
+const wireOfPin = id => wires.find(w => w.a === id || w.b === id);
+async function runFor(ms){ const c = compile(exampleCode()); assert.equal(c.ok, true, JSON.stringify(c.diag)); hooks.serial = () => {}; SIM.flashed = { js:c.js, size:c.size.text }; startProgram(); let lo = 0, hi = 0; const t0 = Date.now(); while (Date.now() - t0 < ms){ stepperTick(); const r = motorInfo(bench.modules.find(m => m.type === 'motor')).revs; lo = Math.min(lo, r); hi = Math.max(hi, r); await sleep(15); } stopProgram(true); return { lo, hi }; }
+
+test('TB67S128FTG 驅動板：19 支腳都有說明，建議接線後每一支必要的腳都正確', () => {
+  assert.equal(MODULE_TYPES.tb67.pins.length, 19);
+  for (const [n, f] of MODULE_TYPES.tb67.pins) assert.ok(f.length > 12, n);
+  for (const b of BOARDS.filter(x => x.step)){
+    setup(b.id, [...FULL.slice(0, 2), { type:'tb67' }, { type:'motor' }, FULL[2]]);
+    const c = compile(exampleCode());
+    assert.equal(c.ok, true, `${b.id}: ${JSON.stringify(c.diag)}`);
+    assert.deepEqual(c.diag, [], b.id);
+    assert.deepEqual(problems(runChecks(exampleCode())), [], b.id);
+    for (const d of bench.modules.filter(m => m.type === 'tb67')){
+      const st = drvStatus(d);
+      assert.ok(st.vmOk && st.gndMcu, `${b.id} 驅動板沒有電或沒共地`);
+      assert.ok(coilMap(bench.modules.find(m => m.type === 'motor' && coilMap(m).drv === d)).normal, `${b.id} 馬達線序`);
+    }
+  }
+});
+
+test('各家 SDK：MCU → TB67S128FTG → 馬達，兩顆都會轉', async () => {
+  for (const sdk of [...new Set(BOARDS.map(b => b.sdk))]){
+    const b = BOARDS.find(x => x.sdk === sdk && x.step);
+    setup(b.id, [{ type:'tb67' }, { type:'motor' }, { type:'tb67' }, { type:'motor' }, { type:'psu' }]);
+    const c = compile(exampleCode()); assert.equal(c.ok, true, b.id);
+    hooks.serial = () => {}; SIM.flashed = { js:c.js, size:c.size.text }; startProgram();
+    const ms = bench.modules.filter(m => m.type === 'motor'); let peak = 0;
+    const t0 = Date.now(); while (Date.now() - t0 < 1500){ stepperTick(); peak = Math.max(peak, motorInfo(ms[0]).revs); await sleep(15); }
+    stopProgram(true);
+    assert.ok(peak > 1, `${b.id}（${sdk}）M1 只轉了 ${peak.toFixed(2)} 圈`);
+    assert.ok(Math.abs(motorInfo(ms[1]).revs) > .2, `${b.id} M2 沒有轉`);
+    assert.equal(motorInfo(ms[0]).stalls, 0, `${b.id} 失步`);
+  }
+});
+
+test('TB67S128FTG 接錯時的行為和 datasheet 一樣（反轉、ISD、OPD、共地、待機、低電壓、燒毀）', async () => {
+  const swap = (d, m, x, y) => { removeWire(W(`${d}.${x}`, `${m}.${x}`), true); removeWire(W(`${d}.${y}`, `${m}.${y}`), true); addWire(`${d}.${x}`, `${m}.${y}`, null, true); addWire(`${d}.${y}`, `${m}.${x}`, null, true); refreshNet(); };
+  const ids = () => { const d = bench.modules.find(m => m.type === 'tb67'), m = bench.modules.find(x => x.type === 'motor'), p = bench.modules.find(x => x.type === 'psu'); return { d, m, p }; };
+  const titles = () => problems(runChecks(exampleCode())).join(' | ');
+  // 一組線圈反接：還是會轉，但方向相反（檢測只提示）
+  setup('nucleo-f446re', FULL); let { d, m } = ids(); swap(d.id, m.id, 'A+', 'A-');
+  let r = await runFor(1300); assert.ok(r.lo < -.9 && r.hi < .05, `反接 ${r.lo}..${r.hi}`); assert.equal(titles(), '');
+  // A−、B− 對調：接錯相 → 過電流保護（ISD），LO0 被拉低，程式會印出錯誤
+  setup('nucleo-f446re', FULL); ({ d, m } = ids()); swap(d.id, m.id, 'A-', 'B-');
+  r = await runFor(1300); assert.equal(drvOf(d).fault, 'ISD'); assert.ok(Math.abs(r.hi) < .01); assert.match(titles(), /接錯相/);
+  // 拔掉一條馬達線 → OPD
+  setup('nucleo-f446re', FULL); ({ d, m } = ids()); removeWire(W(`${d.id}.B-`, `${m.id}.B-`), true); refreshNet();
+  await runFor(600); assert.equal(drvOf(d).fault, 'OPD'); assert.match(titles(), /沒接好/);
+  // 沒有共地、STBY 沒接：不會動
+  setup('nucleo-f446re', FULL); ({ d } = ids()); removeWire(wireOfPin(`${d.id}.GND`), true); refreshNet();
+  r = await runFor(600); assert.ok(r.hi < .01); assert.match(titles(), /沒有和 MCU 共地/);
+  setup('nucleo-f446re', FULL); ({ d } = ids()); removeWire(wireOfPin(`${d.id}.STBY`), true); refreshNet();
+  r = await runFor(600); assert.ok(r.hi < .01); assert.match(titles(), /STBY 沒有接/);
+  // 5 V 電源：低電壓保護
+  setup('nucleo-f446re', [FULL[0], FULL[1], { type:'psu', variant:'psu-5' }]); ({ d } = ids());
+  r = await runFor(600); assert.ok(r.hi < .01); assert.equal(drvStatus(d).vmOk, false); assert.match(titles(), /只有 5 V/);
+  // 邏輯腳接到 24 V：驅動板燒毀；V+ 接到 MCU 腳：開發板斷電
+  setup('nucleo-f446re', FULL); let p; ({ d, p } = ids()); removeWire(wireOfPin(`${d.id}.EN`), true); addWire(`${p.id}.V+`, `${d.id}.EN`, null, true); refreshNet();
+  assert.deepEqual(checkDamage().map(x => x.id), [d.id]); assert.match(titles(), /燒毀/);
+  setup('nucleo-f446re', FULL); ({ d, p } = ids()); const g = wireOfPin(`${d.id}.DIR`), mcu = g.a === `${d.id}.DIR` ? g.b : g.a; removeWire(g, true); addWire(`${p.id}.V+`, mcu, null, true); refreshNet();
+  assert.ok(shorts().some(s => s.type === 'hv')); assert.equal(SIM.usb && !shorts().some(s => s.type !== 'psu'), false);
+});
+
+test('用一般 GPIO 切換 CLK 也能一步一步推動馬達；MODE 腳接線決定微步', async () => {
+  setup('nucleo-f446re', FULL);
+  const d = bench.modules.find(m => m.type === 'tb67'), m = bench.modules.find(x => x.type === 'motor');
+  const clk = wireOfPin(`${d.id}.CLK`); removeWire(clk, true);
+  const free = bench.board.header.find(h => h.kind === 'gpio' && !net(h.mcu).some(x => x !== h.mcu) && !h.tags.some(t => ['vcp', 'led', 'scl', 'sda'].includes(t)) && h.label !== 'D9' && h.mcu !== bench.board.btn?.pin);
+  addWire(free.id, `${d.id}.CLK`, null, true);
+  // MODE2 接 3V3：MODE2..0＝100 → 1/16（沒接的兩支是低電位）
+  addWire('R.+9', `${d.id}.MODE2`, null, true); refreshNet();
+  assert.equal(drvStatus(d).div, 16); assert.equal(drvStatus(d).modeWired, true);
+  const port = free.mcu.match(/^P([A-K])(\d+)$/);
+  const code = exampleCode().replace(/while \(1\)\s*\{/, `while (1)\n  {\n    for (int s = 0; s < 400; s++) { HAL_GPIO_TogglePin(GPIO${port[1]}, GPIO_PIN_${port[2]}); }`);
+  const c = compile(code); assert.equal(c.ok, true, JSON.stringify(c.diag));
+  hooks.serial = () => {}; SIM.flashed = { js:c.js, size:c.size.text }; startProgram();
+  await until(() => { stepperTick(); return Math.abs(motorInfo(m).revs) > .05; }, 3000); stopProgram(true);
+  assert.ok(Math.abs(motorInfo(m).revs) > .05, `GPIO 切換只轉了 ${motorInfo(m).revs}`);
+});

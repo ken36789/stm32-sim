@@ -7,13 +7,25 @@ import { G, M, box, cyl, topPlane, ctex, hitBox, hitTarget, glowSprite, addPin, 
 const hex = n => '#' + n.toString(16).padStart(6, '0');
 
 const PROTO_ART = { i2c:'I2C', uart:'UART', spi:'SPI', can:'CAN' };
+/** 模組腳位的位置：左欄在模組左緣，右欄（第三個欄位是 'R'）在右緣 */
+export function pinLayout(T){
+  const L = T.pins.filter(p => p[2] !== 'R'), Rt = T.pins.filter(p => p[2] === 'R'), pl = T.pitch || 5, pr = T.pitchR || pl;
+  return [...L.map(([n], j) => ({ n, x:-T.w / 2 + 3, z:(j - (L.length - 1) / 2) * pl, side:'L' })), ...Rt.map(([n], j) => ({ n, x:T.w / 2 - 3, z:(j - (Rt.length - 1) / 2) * pr, side:'R' }))];
+}
 function drawTop(m, T, v){
-  const S = 20, W = T.w * S, H = T.d * S, pitch = T.pitch || 5;
+  const S = 20, W = T.w * S, H = T.d * S, lay = pinLayout(T), two = lay.some(p => p.side === 'R');
   return ctex(W, H, g => {
     g.fillStyle = hex(T.pcb); g.fillRect(0, 0, W, H);
     g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 3; g.strokeRect(6, 6, W - 12, H - 12);
-    g.fillStyle = '#eef2f4'; g.textBaseline = 'middle'; g.textAlign = 'left'; g.font = '600 24px "JetBrains Mono", monospace';
-    T.pins.forEach(([n], j) => g.fillText(n, 5.3 * S, (T.d / 2 + (j - (T.pins.length - 1) / 2) * pitch) * S));
+    g.fillStyle = '#eef2f4'; g.textBaseline = 'middle'; g.font = `600 ${two ? 20 : 24}px "JetBrains Mono", monospace`;
+    for (const p of lay){ g.textAlign = p.side === 'R' ? 'right' : 'left'; g.fillText(p.n.replace('-', '−'), p.side === 'R' ? W - 5.3 * S : 5.3 * S, (T.d / 2 + p.z) * S); }
+    if (two){
+      g.textAlign = 'center'; g.font = '700 20px "Chakra Petch", "Noto Sans TC", sans-serif'; g.fillText(moduleLabel(m), W / 2, 22);
+      g.font = '500 15px "JetBrains Mono", monospace'; g.fillStyle = 'rgba(238,242,244,.75)'; g.fillText('TB67S128FTG', W / 2, H - 16);
+      g.fillStyle = '#ffd166'; g.font = '600 15px "JetBrains Mono", monospace'; g.fillText('VREF', W / 2, (T.d / 2 + 6.8) * S); g.fillText('MODE', (T.w / 2 + 4.3) * S, (T.d / 2 + 17.3) * S);
+      return;
+    }
+    g.textAlign = 'left';
     g.textAlign = 'right'; g.font = '600 21px "Chakra Petch", "Noto Sans TC", sans-serif';
     g.fillText(moduleLabel(m), W - 14, 24);
     g.font = '500 16px "JetBrains Mono", monospace'; g.fillStyle = 'rgba(238,242,244,.75)';
@@ -40,9 +52,11 @@ export function buildModule(m, [sx, sz], parent){
   box(T.w, 1.6, T.d, M(T.pcb, { roughness:.7 }), 0, -.8, 0, grp);
   topPlane(T.w, T.d, drawTop(m, T, v), 0, .01, 0, grp);
   for (const [x, z] of [[-T.w / 2 + 2, -T.d / 2 + 2], [T.w / 2 - 2, -T.d / 2 + 2], [-T.w / 2 + 2, T.d / 2 - 2], [T.w / 2 - 2, T.d / 2 - 2]]) cyl(.9, 2.4, M(0x2a2d31), x, -2.8, z, grp, 6);
-  box(3, 2.5, T.pins.length * pitch, M(0x16181b), -T.w / 2 + 3, 1.25, 0, grp);
-  T.pins.forEach(([n], j) => addPin(`${m.id}.${n}`, sx - T.w / 2 + 3, MOD_PIN_TOP, sz + (j - (T.pins.length - 1) / 2) * pitch));
-  hitBox(T.w - 6, 1.6, T.d, sx + 3, -2.2, sz, { type:'module', id:m.id }, parent);
+  const lay = pinLayout(T);
+  for (const side of ['L', 'R']){ const ps = lay.filter(p => p.side === side); if (ps.length) box(3, 2.5, ps.length * (side === 'R' ? T.pitchR || pitch : pitch), M(0x16181b), ps[0].x, 1.25, 0, grp); }
+  lay.forEach(p => addPin(`${m.id}.${p.n}`, sx + p.x, MOD_PIN_TOP, sz + p.z));
+  if (lay.some(p => p.side === 'R')) hitBox(T.w - 12, 1.6, T.d, sx, -2.2, sz, { type:'module', id:m.id }, parent);
+  else hitBox(T.w - 6, 1.6, T.d, sx + 3, -2.2, sz, { type:'module', id:m.id }, parent);
   const V = { type:m.type };
   const cx = T.w / 2 - 6, wx = sx + cx;   // 主要元件位置（模組右半部）
   switch (m.type){
@@ -151,24 +165,54 @@ export function buildModule(m, [sx, sz], parent){
     }
     case 'stepper': {
       // TB67S128FTG 驅動板（QFN 晶片、DMODE 指撥開關）＋ 直立的 NEMA 步進馬達，軸上裝負載（圓盤／飛輪）
-      const mx = 5.6, mz = -6.6, big = v.id === 'nema23', S = big ? 11.6 : 10.6;
+      const mx = 5.6, mz = -6.6, S = v.id === 'nema23' ? 11.6 : 10.6;
       box(4.6, .8, 4.6, M(0x1c1e21, { roughness:.5 }), 2.6, .4, 5.2, grp);
       topPlane(4.4, 4.4, ctex(128, 128, g => { g.fillStyle = '#1c1e21'; g.fillRect(0, 0, 128, 128); g.fillStyle = '#c6ccd1'; g.font = '600 19px "JetBrains Mono", monospace'; g.textAlign = 'center'; g.fillText('TB67S', 64, 54); g.fillText('128FTG', 64, 80); g.beginPath(); g.arc(16, 112, 6, 0, 7); g.fillStyle = '#121417'; g.fill(); }), 2.6, .81, 5.2, grp);
       box(3.6, 1, 5.2, M(0xc0392b, { roughness:.5 }), 8.6, .5, 5.2, grp);                       // DMODE 指撥開關（紅色）
       V.dip = [0, 1, 2].map(k => box(1, .55, 1.1, M(0xf2f2f2), 8.6, 1.1, 3.6 + k * 1.6, grp));
       ['#d63031', '#2d3436', '#0984e3', '#00b894'].forEach((c, k) => box(.45, .35, 5.6, M(parseInt(c.slice(1), 16), { roughness:.6 }), 1.4 + k * .8, .2, -1.4, grp));   // 線圈 A+ A− B+ B−
-      const al = M(0xb8bec4, { metalness:.7, roughness:.3 });
-      box(S, 1.6, S, al, mx, .8, mz, grp); box(S - .4, 5.6, S - .4, M(0x1f2226, { roughness:.55, metalness:.25 }), mx, 4.4, mz, grp); box(S, 1.6, S, al, mx, 8, mz, grp);
-      cyl(2.2, .6, al, mx, 9.1, mz, grp, 24); cyl(.55, 2.4, M(0xd9dde0, { metalness:.8, roughness:.2 }), mx, 10.2, mz, grp, 16);
-      V.rotor = new THREE.Group(); V.rotor.position.set(mx, 11, mz); grp.add(V.rotor);
-      const accent = M(0xffd166, { emissive:0x332200 });
-      const hub = new THREE.Group(); cyl(1.4, 1.2, M(0x2a2d31), 0, 0, 0, hub, 16); box(.7, .5, 3.6, accent, 0, .6, -1.6, hub);
-      const disk = new THREE.Group(); cyl(4.6, .6, M(0xc7ccd1, { metalness:.75, roughness:.28 }), 0, 0, 0, disk, 40); box(.9, .2, 4.2, accent, 0, .4, -2.3, disk); for (let k = 0; k < 4; k++){ const a = k * Math.PI / 2 + Math.PI / 4; cyl(.55, .7, M(0x1a1c1f), Math.cos(a) * 2.6, .05, Math.sin(a) * 2.6, disk, 12); }
-      const fly = new THREE.Group(); cyl(6.6, 1.8, M(0x8f969c, { metalness:.8, roughness:.3 }), 0, .4, 0, fly, 48); cyl(4.6, 1.9, M(0x5d646a, { metalness:.7, roughness:.35 }), 0, .45, 0, fly, 40); box(1.1, .25, 6, accent, 0, 1.45, -3.2, fly);
-      V.loads = [hub, disk, fly]; V.loads.forEach(g => V.rotor.add(g));
-      V.glow = glowSprite(0xff3b30, 26); V.glow.position.set(sx + mx, 6, sz + mz); parent.add(V.glow);
+      buildMotor(V, grp, parent, m, sx, sz, mx, mz, S);
       V.en = glowSprite(0x3ddc84, 6); V.en.position.set(sx + 5.6, -1.8, sz + 9.4); parent.add(V.en);
-      hitBox(S + 2, 14, S + 2, sx + mx, 3, sz + mz, { type:'module', id:m.id }, parent);
+      break;
+    }
+    case 'motor': {
+      // 只有馬達：鋁製固定座＋4 線端子（常見顏色 A+ 黑、A− 綠、B+ 紅、B− 藍）
+      const S = v.id === 'nema23' ? 13.2 : 12, mx = 4, mz = 0;
+      ['#2a2a2a', '#2f9d55', '#d5392e', '#2f6cd6'].forEach((c, k) => {
+        const z = (k - 1.5) * pitch, w = new THREE.CatmullRomCurve3([new THREE.Vector3(-T.w / 2 + 4.6, .8, z), new THREE.Vector3(-2.5, 1, z * .6), new THREE.Vector3(mx - S / 2 - .2, 1.6, z * .25)]);
+        const tm = new THREE.Mesh(new THREE.TubeGeometry(w, 16, .42, 6, false), M(parseInt(c.slice(1), 16), { roughness:.55 })); tm.castShadow = true; grp.add(tm);
+      });
+      buildMotor(V, grp, parent, m, sx, sz, mx, mz, S);
+      break;
+    }
+    case 'psu': {
+      // DC 變壓器：電源磚＋線材＋綠色端子台（V+ 紅、V− 黑），開關打開時亮藍燈
+      box(13, 7, 15, M(0x1d1f22, { roughness:.55 }), 4, 3.5, -3, grp);
+      topPlane(12, 14, ctex(240, 280, g => { g.fillStyle = '#1d1f22'; g.fillRect(0, 0, 240, 280); g.fillStyle = '#c6ccd1'; g.textAlign = 'center'; g.font = '700 44px "JetBrains Mono", monospace'; g.fillText(`${v.v}V`, 120, 110); g.font = '600 26px "JetBrains Mono", monospace'; g.fillText(`${v.amp} A`, 120, 156); g.font = '500 18px "Noto Sans TC", sans-serif'; g.fillStyle = '#8b949b'; g.fillText('DC OUTPUT', 120, 210); }), 4, 7.02, -3, grp);
+      box(4.4, 3.6, 8, M(0x2c7a43, { roughness:.6 }), -6.5, 1.8, 0, grp);
+      const cable = new THREE.CatmullRomCurve3([new THREE.Vector3(4, 2, 4.6), new THREE.Vector3(2, 1.2, 9), new THREE.Vector3(-3, 1.4, 8), new THREE.Vector3(-4.5, 1.8, 2.5)]);
+      const cm = new THREE.Mesh(new THREE.TubeGeometry(cable, 20, .7, 8, false), M(0x1d1f22, { roughness:.5 })); cm.castShadow = true; grp.add(cm);
+      V.led = M(0x1b2a3a, { emissive:0x000000 }); box(1.2, .4, 1.2, V.led, 8, 7.2, -8.5, grp);
+      V.glow = glowSprite(0x4aa3ff, 9); V.glow.position.set(sx + 8, 5, sz - 8.5); parent.add(V.glow);
+      hitBox(14, 8, 16, sx + 4, 1, sz - 3, { type:'module', id:m.id }, parent);
+      break;
+    }
+    case 'tb67': {
+      // TB67S128FTG 驅動板：QFN64 晶片（或散熱片）、VREF 可變電阻、MODE 跳線、VIN 電解電容、LED
+      V.chip = box(5.4, .9, 5.4, M(0x1c1e21, { roughness:.5 }), 0, .45, -6, grp); V.chipColor = 0x1c1e21;
+      topPlane(5.2, 5.2, ctex(128, 128, g => { g.fillStyle = '#1c1e21'; g.fillRect(0, 0, 128, 128); g.fillStyle = '#c6ccd1'; g.font = '600 19px "JetBrains Mono", monospace'; g.textAlign = 'center'; g.fillText('TB67S', 64, 54); g.fillText('128FTG', 64, 80); g.beginPath(); g.arc(16, 112, 6, 0, 7); g.fillStyle = '#121417'; g.fill(); }), 0, .91, -6, grp);
+      if (v.id === 'tb67-sink'){ const al = M(0xb8bec4, { metalness:.7, roughness:.3 }); box(6, .8, 6, al, 0, 1.3, -6, grp); for (let k = 0; k < 5; k++) box(.6, 3.2, 6, al, -2.4 + k * 1.2, 3.2, -6, grp); }
+      cyl(2.3, 6, M(0x1f2a44, { roughness:.4 }), 5.5, 3, -23, grp, 24); cyl(2.31, .3, M(0xb8bec4, { metalness:.6 }), 5.5, 6.05, -23, grp, 24);   // 電解電容
+      box(3.2, 1.6, 3.2, M(0x2b5fc2, { roughness:.5 }), 0, .8, 3.5, grp);
+      V.pot = new THREE.Group(); V.pot.position.set(0, 1.7, 3.5); grp.add(V.pot); cyl(1.1, .3, M(0xf2f2f2), 0, 0, 0, V.pot, 16); box(.3, .32, 1.8, M(0x2a2d31), 0, .05, 0, V.pot);
+      box(7, 1, 4.6, M(0x16181b), 4.3, .5, 21, grp);                                          // MODE 跳線排針
+      V.jump = [0, 1, 2].map(k => box(1.9, 1.8, 2.1, M(0x16181b, { roughness:.4 }), 2 + k * 2.3, 1.9, 21, grp));
+      V.fled = M(0x3a1f1f, { emissive:0x000000 }); box(1.2, .5, 1, V.fled, -1.6, .25, -16, grp);
+      V.pled = M(0x1f3a26, { emissive:0x000000 }); box(1.2, .5, 1, V.pled, 1.6, .25, -16, grp);
+      V.fault = glowSprite(0xff3b30, 9); V.fault.position.set(sx - 1.6, -1.6, sz - 16); parent.add(V.fault);
+      V.power = glowSprite(0x3ddc84, 7); V.power.position.set(sx + 1.6, -1.6, sz - 16); parent.add(V.power);
+      V.heat = glowSprite(0xff7a2a, 22); V.heat.position.set(sx, 0, sz - 6); parent.add(V.heat);
+      setDamaged(V, m.st.damaged);
       break;
     }
     case 'la_i2c': case 'la_uart': case 'la_spi': case 'la_can': {
@@ -186,6 +230,21 @@ export function buildModule(m, [sx, sz], parent){
   G.mods[m.id] = V;
 }
 
+/** 直立的 NEMA 步進馬達：轉子上裝負載（沒有負載、鋁圓盤、大飛輪），失步時閃紅光 */
+function buildMotor(V, grp, parent, m, sx, sz, mx, mz, S){
+  const al = M(0xb8bec4, { metalness:.7, roughness:.3 });
+  box(S, 1.6, S, al, mx, .8, mz, grp); box(S - .4, 5.6, S - .4, M(0x1f2226, { roughness:.55, metalness:.25 }), mx, 4.4, mz, grp); box(S, 1.6, S, al, mx, 8, mz, grp);
+  cyl(2.2, .6, al, mx, 9.1, mz, grp, 24); cyl(.55, 2.4, M(0xd9dde0, { metalness:.8, roughness:.2 }), mx, 10.2, mz, grp, 16);
+  V.rotor = new THREE.Group(); V.rotor.position.set(mx, 11, mz); grp.add(V.rotor);
+  const accent = M(0xffd166, { emissive:0x332200 });
+  const hub = new THREE.Group(); cyl(1.4, 1.2, M(0x2a2d31), 0, 0, 0, hub, 16); box(.7, .5, 3.6, accent, 0, .6, -1.6, hub);
+  const disk = new THREE.Group(); cyl(4.6, .6, M(0xc7ccd1, { metalness:.75, roughness:.28 }), 0, 0, 0, disk, 40); box(.9, .2, 4.2, accent, 0, .4, -2.3, disk); for (let k = 0; k < 4; k++){ const a = k * Math.PI / 2 + Math.PI / 4; cyl(.55, .7, M(0x1a1c1f), Math.cos(a) * 2.6, .05, Math.sin(a) * 2.6, disk, 12); }
+  const fly = new THREE.Group(); cyl(6.6, 1.8, M(0x8f969c, { metalness:.8, roughness:.3 }), 0, .4, 0, fly, 48); cyl(4.6, 1.9, M(0x5d646a, { metalness:.7, roughness:.35 }), 0, .45, 0, fly, 40); box(1.1, .25, 6, accent, 0, 1.45, -3.2, fly);
+  V.loads = [hub, disk, fly]; V.loads.forEach(g => V.rotor.add(g));
+  V.glow = glowSprite(0xff3b30, 26); V.glow.position.set(sx + mx, 6, sz + mz); parent.add(V.glow);
+  V.hold = glowSprite(0x5fd3f3, 16); V.hold.position.set(sx + mx, 4, sz + mz); parent.add(V.hold);
+  hitBox(S + 2, 14, S + 2, sx + mx, 3, sz + mz, { type:'module', id:m.id }, parent);
+}
 function setDamaged(V, d){ if (V.chip) V.chip.material.color.setHex(d ? 0x3a2b22 : V.chipColor); }
 const lit = (V, on, color) => { if (V.mat){ V.mat.emissive.setHex(on ? color : 0); V.mat.emissiveIntensity = on ? 1.6 : 0; } if (V.glow){ V.glow.visible = on; if (on) V.glow.material.color.setHex(color); } };
 
@@ -205,12 +264,25 @@ export function updateModule(m, s, t){
     }
     case 'can': V.glow.visible = !!s.on; break;
     case 'tc': V.glow.visible = (m.st.tcT ?? 0) > 60; break;
-    case 'stepper': {
+    case 'stepper': case 'motor': {
       V.rotor.rotation.y = -s.deg * Math.PI / 180;                 // 從軸端往下看，順時針為正
       V.loads.forEach((g, k) => { g.visible = k === s.load; });
-      const bits = s.bits || '000'; V.dip.forEach((d, k) => { d.position.x = 8.6 + (bits[k] === '1' ? .9 : -.9); });
+      if (V.dip){ const bits = s.bits || '000'; V.dip.forEach((d, k) => { d.position.x = 8.6 + (bits[k] === '1' ? .9 : -.9); }); }
       V.glow.visible = !!s.stalled; if (s.stalled) V.glow.material.opacity = .55 + .45 * Math.sin(t / 70);
-      V.en.visible = !!s.en; break;
+      if (V.en) V.en.visible = !!s.en;
+      V.hold.visible = !!s.en && !s.stalled; if (V.hold.visible) V.hold.material.opacity = .18 + .12 * Math.sin(t / 240);   // 線圈有電流（保持轉矩）
+      break;
+    }
+    case 'psu': { const on = !!s.on; V.glow.visible = on; V.led.emissive.setHex(on ? 0x4aa3ff : 0); V.led.emissiveIntensity = on ? 1.6 : 0; break; }
+    case 'tb67': {
+      const f = !!s.fault, p = !!s.vmOk;
+      V.fault.visible = f; if (f) V.fault.material.opacity = .6 + .4 * Math.sin(t / 90);
+      V.fled.emissive.setHex(f ? 0xff3b30 : 0); V.fled.emissiveIntensity = f ? 1.6 : 0;
+      V.power.visible = p; V.pled.emissive.setHex(p ? 0x3ddc84 : 0); V.pled.emissiveIntensity = p ? 1.4 : 0;
+      V.pot.rotation.y = -(s.vref / 2) * Math.PI * 1.5;
+      const bits = s.bits || '000'; V.jump.forEach((j, k) => { j.visible = !s.modeWired && bits[2 - k] === '1'; });   // 跳線帽：MODE0、MODE1、MODE2
+      V.heat.visible = s.temp > 70; if (V.heat.visible){ const k = Math.min(1, (s.temp - 70) / 90); V.heat.material.opacity = .25 + .6 * k; V.heat.scale.setScalar(14 + 16 * k); }
+      setDamaged(V, s.damaged); break;
     }
   }
 }

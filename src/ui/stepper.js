@@ -2,7 +2,7 @@
 import { $, esc, toast } from './dom.js';
 import { variantOf } from '../core/parts.js';
 import { bench, moduleById, moduleLabel } from '../core/sim.js';
-import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo, motorParams, stepperTick, setDiv, setLoad, segAt, ucntAt, coilCurrents, startManual, stopManual, jumpLimit, accelLimit, isStepper } from '../core/steppers.js';
+import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo, motorParams, stepperTick, setDiv, setLoad, segAt, ucntAt, coilCurrents, startManual, stopManual, jumpLimit, accelLimit, isStepper, divSource, coilMap, drvOf, FAULTS } from '../core/steppers.js';
 
 const S = { id:null, tab:'info', step:0, div:5, paused:false, pauseT:0, raf:0, man:{ rpm:180, acc:240, revs:3, dir:1, ramp:true, cont:false }, code:() => '', last:0 };
 const DIVS = [.05, .1, .2, .5, 1, 2, 5, 10, 20, 50, 100, 200];   // 毫秒／格
@@ -22,12 +22,13 @@ const cur = () => moduleById(S.id);
 function renderHead(){
   const m = cur(), v = variantOf(m.type, m.variant), list = bench.modules.filter(isStepper);
   $('#smTitle').textContent = `${moduleLabel(m)} · 步進馬達示波器`;
-  $('#smSub').textContent = `${v.name} · TB67S128FTG`;
+  const d = m.type === 'motor' ? coilMap(m).drv : null;
+  $('#smSub').textContent = m.type === 'motor' ? `${v.name} · ${d ? `${moduleLabel(d)}（TB67S128FTG）` : '還沒有接驅動板'}` : `${v.name} · TB67S128FTG（一體式）`;
   $('#smMotors').innerHTML = list.length > 1 ? list.map(x => `<button type="button" class="chip ${x.id === m.id ? 'hi' : ''}" data-motor="${x.id}">${esc(moduleLabel(x))}</button>`).join('') : '';
 }
 function renderBar(){
-  const m = cur(), mo = motorOf(m);
-  $('#smBar').innerHTML = `<div class="sm-us" role="group" aria-label="微步（DMODE 指撥開關）"><span>微步<small>DMODE ${dmodeBits(mo.div)}</small></span>${USTEP.map(d => `<button type="button" class="${d === mo.div ? 'on' : ''}" data-div="${d}">${d === 1 ? '全步' : '1/' + d}</button>`).join('')}</div>
+  const m = cur(), mo = motorOf(m), src = divSource(m);
+  $('#smBar').innerHTML = `<div class="sm-us" role="group" aria-label="微步（MODE2..0）" title="${esc(src.how)}"><span>微步<small>MODE ${dmodeBits(src.div)}</small></span>${USTEP.map(d => `<button type="button" class="${d === src.div ? 'on' : ''}" data-div="${d}" ${src.can ? '' : 'disabled'}>${d === 1 ? '全步' : '1/' + d}</button>`).join('')}${src.can ? '' : `<small class="sm-lock">${esc(src.how)}</small>`}</div>
     <label>時間刻度<select id="smDiv">${DIVS.map((d, i) => `<option value="${i}" ${i === S.div ? 'selected' : ''}>${d >= 1 ? d + ' ms' : d * 1000 + ' µs'}／格</option>`).join('')}</select></label>
     <label>負載<select id="smLoad">${LOADS.map(l => `<option value="${l.id}" ${l.id === mo.load ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
     <button class="btn sm" id="smPause" type="button">${S.paused ? '▶ 繼續' : '❚❚ 暫停'}</button>`;
@@ -70,6 +71,7 @@ function drawScope(m, t1){
       const k0 = segAt(mo, t0); let dense = false;
       for (let k = Math.max(0, k0); k < mo.hist.length && mo.hist[k].t < t1; k++){
         const sg = mo.hist[k], end = Math.min(t1, k + 1 < mo.hist.length ? mo.hist[k + 1].t : t1);
+        if (sg.lvl === 1){ const xa = X(Math.max(t0, sg.t)), xb = Math.max(xa + 1, X(end)); g.moveTo(xa, bot); g.lineTo(xa, top); g.lineTo(xb, top); g.lineTo(xb, bot); continue; }   // 用 GPIO 切換的 CLK
         if (!(sg.f > 0) || !sg.en) continue;
         const s0 = Math.max(t0, sg.t), cnt = sg.f * (end - s0) / 1000;
         if (cnt / Math.max(1, X(end) - X(s0)) > .35){ dense = true; g.fillStyle = COL.step; g.globalAlpha = .55; g.fillRect(X(s0), top, Math.max(1, X(end) - X(s0)), bot - top); g.globalAlpha = 1; continue; }
@@ -91,7 +93,7 @@ function drawScope(m, t1){
         if (first){ g.moveTo(x, yv); first = false; } else g.lineTo(x, yv);
       }
       g.stroke();
-      const iset = motorParams(m).v.Iset; g.fillStyle = COL.dim; g.font = '10px "JetBrains Mono", monospace'; g.fillText(`+${iset} A`, LBL - 40, top + 4); g.fillText(`−${iset} A`, LBL - 40, bot - 4);
+      const iset = (motorInfo(m).ilim || 0).toFixed(2); g.fillStyle = COL.dim; g.font = '10px "JetBrains Mono", monospace'; g.fillText(`+${iset} A`, LBL - 40, top + 4); g.fillText(`−${iset} A`, LBL - 40, bot - 4);
     }
     y += unit * h;
   }
@@ -139,8 +141,16 @@ function drawSpeed(m, t1){
 function readouts(m){
   const i = motorInfo(m), el = $('#smRead'); if (!el) return;
   const acc = recentAccel(m);
-  el.innerHTML = [['STEP 頻率', `${fmtN(i.pps)} pps`], ['指令轉速', `${Math.abs(i.cmdRpm).toFixed(1)} RPM`], ['實際轉速', `${Math.abs(i.rpm).toFixed(1)} RPM`], ['加速度', `${fmtN(acc)} pps/s`], ['微步', i.div === 1 ? '全步' : `1/${i.div}`], ['每個脈波', `${i.stepDeg.toFixed(i.stepDeg < .1 ? 4 : 3)}°`], ['一圈脈波', fmtN(i.perRev)], ['位置', `${i.revs.toFixed(2)} 圈`], ['失步', i.lost ? `${Math.abs(i.lost)} 全步` : '無']]
-    .map(([k, v]) => `<div><span>${k}</span><b class="${k === '失步' && i.lost ? 'bad' : ''}">${v}</b></div>`).join('');
+  el.innerHTML = [['STEP 頻率', `${fmtN(i.pps)} pps`], ['指令轉速', `${Math.abs(i.cmdRpm).toFixed(1)} RPM`], ['實際轉速', `${Math.abs(i.rpm).toFixed(1)} RPM`], ['加速度', `${fmtN(acc)} pps/s`], ['微步', i.div === 1 ? '全步' : `1/${i.div}`], ['每個脈波', `${i.stepDeg.toFixed(i.stepDeg < .1 ? 4 : 3)}°`], ['一圈脈波', fmtN(i.perRev)], ['位置', `${i.revs.toFixed(2)} 圈`], ['失步', i.lost ? `${Math.abs(i.lost)} 全步` : '無'], ['線圈電流', `${(i.ilim || 0).toFixed(2)} A`], ['驅動板', drvState(m, i)]]
+    .map(([k, v]) => `<div><span>${k}</span><b class="${(k === '失步' && i.lost) || (k === '驅動板' && !/正常|手動/.test(v)) ? 'bad' : ''}">${v}</b></div>`).join('');
+}
+/** 驅動板狀態的一句話 */
+function drvState(m, i){
+  if (i.src === 'manual') return '手動測試';
+  if (i.kind === 'kit') return !i.ok ? '沒有供電' : !i.en ? 'EN 低電位' : '正常';
+  const inp = i.inp; if (!inp.drv) return '沒有接驅動板';
+  const st = inp.st, f = drvOf(inp.drv).fault;
+  return st.damaged ? '已燒毀' : f ? FAULTS[f].name : !st.vmOk ? `VIN ${st.vm} V` : !st.gndMcu ? '沒有共地' : !st.stby ? '待機（STBY 低）' : !st.en ? 'EN 低電位' : st.rst ? 'RESET 中' : !inp.cm.ok ? '馬達線接錯' : '正常';
 }
 /** 最近 0.1 秒 STEP 頻率的變化率（pps/s） */
 function recentAccel(m){
@@ -150,7 +160,7 @@ function recentAccel(m){
 }
 
 /* ---------- 側邊欄 ---------- */
-function codeMicrostep(m){ const list = bench.modules.filter(isStepper), k = list.indexOf(m) + 1, mt = S.code().match(new RegExp(`#define\\s+M${k}_MICROSTEP\\s+(\\d+)`)); return mt ? +mt[1] : null; }
+function codeMicrostep(m){ const list = bench.modules.filter(x => x.type === 'stepper' || x.type === 'tb67'), k = list.indexOf(m.type === 'motor' ? coilMap(m).drv : m) + 1, mt = S.code().match(new RegExp(`#define\\s+M${k}_MICROSTEP\\s+(\\d+)`)); return mt ? +mt[1] : null; }
 /** live＝true：結構沒變時只更新數字（不重畫按鈕，點按才不會被打斷） */
 function renderPane(live){
   if (!live) S.paneKey = null;
@@ -160,9 +170,22 @@ function renderPane(live){
   if (S.tab === 'info'){
     const fw = codeMicrostep(m), acc = recentAccel(m), v = Math.abs(i.pps);
     const warn = [];
-    if (!i.ok) warn.push(['err', '驅動模組沒有供電', 'IOREF（VCC）要接 3V3、GND 要接地，TB67S128FTG 才會動作。']);
+    const pinHelp = '到「元件」分頁點驅動板，接線表會列出每一支腳該接哪裡。';
+    if (i.kind === 'tb67'){
+      const inp = i.inp, st = inp.st, d = inp.drv, f = d ? drvOf(d).fault : null;
+      if (!d) warn.push(['err', '馬達沒有接到驅動板', `四條馬達線要接到 TB67S128FTG 驅動板右側的 A+、A−、B+、B−。${pinHelp}`]);
+      else if (st.damaged) warn.push(['err', `${moduleLabel(d)} 已燒毀`, `有邏輯腳接到了超過 5.5 V 的馬達電源。改好接線後到「檢測」換一塊新的。`]);
+      else if (f) warn.push(['err', `${moduleLabel(d)} 鎖在錯誤：${FAULTS[f].name}`, `${FAULTS[f].why} 旗標：${FAULTS[f].lo}。改好之後把 STANDBY 拉低再拉高（範例程式會自動做），或關掉馬達電源再打開。`]);
+      else if (!st.vmOk) warn.push(['err', st.vm ? `VIN 只有 ${st.vm} V` : 'VIN 沒有馬達電源', `TB67S128FTG 需要 6.5–44 V 的馬達電源：變壓器 V+ 接 VIN、V− 接 PGND。${pinHelp}`]);
+      else if (!st.gndMcu && !mo.manual) warn.push(['err', '驅動板沒有和 MCU 共地', `STEP、DIR、ENABLE 都是相對於 MCU 的 GND。把驅動板左側的 GND 接到排針 GND。`]);
+      else if (!st.stby && !mo.manual) warn.push(['warn', 'STANDBY 是低電位（待機）', '驅動板在待機，不會動。STBY 接到 MCU GPIO 並在程式裡設成高電位。']);
+      else if (!st.en && !mo.manual) warn.push(['warn', 'ENABLE 是低電位', '線圈沒有電流，馬達沒有出力。EN 接到 MCU GPIO 並設成高電位。']);
+      else if (st.rst && !mo.manual) warn.push(['warn', 'RESET 是高電位', 'STEP 全部被忽略、電氣角停在 45°。RST 不接，或接 GND。']);
+      else if (!inp.cm.ok) warn.push(['err', '馬達線接錯', `${inp.cm.bad === 'open' ? '有一組線圈沒接好' : inp.cm.bad === 'mix' ? '同一組線圈接到了兩個不同的相（A 和 B）' : '馬達線短路'}。${pinHelp}`]);
+      else if (!inp.cm.normal) warn.push(['warn', '馬達線序和標準不同', inp.cm.sigma < 0 ? '一組線圈反接（或 A、B 對調），馬達的轉向和 DIR 相反。把其中一組線圈的兩條線對調就會恢復。' : '兩組線圈都反接，轉向不變。']);
+    } else if (!i.ok) warn.push(['err', '驅動模組沒有供電', 'IOREF（VCC）要接 3V3、GND 要接地，TB67S128FTG 才會動作。']);
     else if (!i.en && !mo.manual) warn.push(['warn', 'ENABLE 是低電位', 'TB67S128FTG 的 ENABLE 要高電位才會送電給馬達。程式要把 EN 腳設成高電位。']);
-    if (i.src === 'mcu' && i.k < 0) warn.push(['warn', 'CLK 沒有接到 STEP 輸出', 'CLK 要接到計時器的 PWM 輸出腳（接線分頁的「建議接線」會自動接好）。']);
+    if (i.src === 'mcu' && i.k < 0 && i.en) warn.push(['warn', 'CLK 沒有接到計時器的 STEP 輸出', 'CLK 要接到計時器的 PWM 輸出腳（接線分頁的「建議接線」會自動接好）。接一般 GPIO 的話，只有程式切換那支腳時才會走一步。']);
     if (fw && fw !== mo.div && !mo.manual) warn.push(['warn', `程式以為是 1/${fw}，模組設成 ${ustepName(mo.div)}`, `程式算 pps 時用的是 MICROSTEP＝${fw}。同樣的脈波數，馬達實際只轉 ${fw > mo.div ? fw / mo.div : `1/${mo.div / fw}`} 倍的距離和速度——這就是微步設定和韌體不一致時會發生的事。要讓速度回到原本的樣子，把程式裡的 MICROSTEP 改成 ${mo.div}，再重新檢測、編譯、燒錄。`, `<button class="btn sm" id="smFix" type="button">把範例程式改成 ${ustepName(mo.div)}</button>`]);
     if (i.lost) warn.push(['err', `失步：少走了 ${Math.abs(i.lost)} 個全步`, '磁場轉得比轉子能跟上的還快（加速度太大、速度太高或負載太重），轉子滑掉了。步進馬達沒有回授，MCU 不會知道它少走了——所以要用加減速（ramp），並把最高速度留在扭力夠的範圍。']);
     const html = `${warn.map(([s, t, b, btn]) => `<div class="sm-warn ${s}"><strong>${esc(t)}</strong><p>${esc(b)}</p>${btn ? `<div class="la-nav">${btn}</div>` : ''}</div>`).join('')}
@@ -187,7 +210,7 @@ function renderPane(live){
     const tAcc = v / a, sAcc = v * v / (2 * a), tri = !M.cont && 2 * sAcc > steps, vPeak = tri ? Math.sqrt(a * steps) : v;
     const total = M.cont ? null : tri ? 2 * vPeak / a : 2 * tAcc + (steps - 2 * sAcc) / v;
     const jl = jumpLimit(m), al = accelLimit(m, M.rpm / 60) ;
-    el.innerHTML = `<p class="note">由控制台的脈波產生器接管這顆馬達的 STEP（不經過 MCU 程式），用來試試看不同的速度、加速度和微步。</p>
+    el.innerHTML = `<p class="note">${i.kind === 'tb67' ? '由控制台的脈波產生器接管驅動板的 CLK、DIR、STANDBY、ENABLE（不經過 MCU 程式）；馬達電源和馬達線還是要接好。' : '由控制台的脈波產生器接管這顆馬達的 STEP（不經過 MCU 程式）。'}用來試試看不同的速度、加速度和微步。</p>
       <label class="ctl" for="smRpm">目標速度<input type="range" id="smRpm" min="10" max="1200" step="10" value="${M.rpm}"><output>${M.rpm} RPM</output></label>
       <label class="ctl" for="smAcc">加速度<input type="range" id="smAcc" min="10" max="6000" step="10" value="${M.acc}"><output>${M.acc} RPM/s</output></label>
       <label class="ctl" for="smRevs">移動距離<input type="range" id="smRevs" min="0.25" max="20" step="0.25" value="${M.revs}" ${M.cont ? 'disabled' : ''}><output>${M.cont ? '連續' : M.revs + ' 圈'}</output></label>
@@ -232,6 +255,7 @@ function drawTrap(v, a, steps, ramp, per){
 /* ---------- 教學 ---------- */
 const LESSONS = [
   { title:'步進馬達怎麼轉', body:['步進馬達有兩組線圈（A、B）。驅動 IC 依順序改變兩組線圈的電流方向，產生一個一格一格轉動的磁場，轉子跟著磁場走。', '1.8° 的馬達轉一圈要 200 個「全步」。每一步走多少是固定的，所以只要數脈波就知道轉了多少——不需要編碼器（這叫開迴路控制）。'], try:'看示波器的線圈 A、B：兩個波形差 90°，就像一個在算 cos、一個在算 sin。右下的相量圖就是這兩個電流畫成的向量。' },
+  { title:'TB67S128FTG 驅動板怎麼接', body:['右側是「大電流」：VIN／PGND 接 6.5–44 V 的馬達電源，A+／A−／B+／B− 接馬達的兩組線圈。左側是「邏輯」：GND 和 MCU 共地、IOREF 接 3V3，STBY、EN、CLK、DIR 接 MCU 的 GPIO。', '板上的下拉電阻讓沒接的腳都是低電位，所以 STANDBY、ENABLE 一定要拉高才會動。出錯（過電流、馬達斷線、過熱）時 LO0／LO1 會變低電位並鎖住，要把 STANDBY 拉低再拉高才會清除。'], try:'到「元件」分頁點驅動板：接線圖和接線表會即時告訴你每一支腳接對了沒有。試著拔掉 GND 或把一組馬達線對調，看看馬達怎麼反應。' },
   { title:'STEP／DIR 介面', body:['TB67S128FTG 用 CLK-IN 模式：MCU 只要給 CLK（STEP）脈波和 CW/CCW（方向）兩條線，電流怎麼切換都由 IC 自己處理。', 'CLK 每個上升緣＝前進一個微步；ENABLE 要高電位才會送電。'], try:'把時間刻度調到 0.2 ms／格，看 STEP 一個脈波，線圈電流就跳一階。' },
   { title:'微步（microstep）', body:['DMODE 指撥開關把一個全步再細分：1/2、1/4 … 1/128。電流不再是方波，而是一階一階的正弦波。', '好處：轉得平順、安靜、低速不抖，定位更細。代價：同樣轉速需要更多脈波；每個微步的扭力變小，不保證每個微步都走得那麼準。'], try:'在上方切換「全步」和「1/128」，比較線圈電流的形狀和相量圖上的點數。' },
   { title:'pps 和轉速', body:['pps（pulses per second）＝每秒送幾個 STEP 脈波＝每秒走幾個微步。', '轉速 RPM ＝ pps ÷ (200 × 微步) × 60。例如 1/16 微步、6400 pps：6400 ÷ 3200 × 60 ＝ 120 RPM。'], try:'程式不變，只把微步從 1/16 改成 1/64：同樣的 pps，馬達只剩 1/4 的速度。「說明」分頁會提醒程式和模組設定不一致。' },
@@ -249,7 +273,7 @@ export function initStepper(o){
   $('#smMotors').addEventListener('click', e => { const b = e.target.closest('[data-motor]'); if (b) openStepper(b.dataset.motor); });
   $('#smBar').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return; const m = cur();
-    if (b.dataset.div){ setDiv(m, +b.dataset.div); renderBar(); renderPane(); o.changed?.(); toast(`${moduleLabel(m)}：微步改成 ${ustepName(+b.dataset.div)}（DMODE ${dmodeBits(+b.dataset.div)}）。`); }
+    if (b.dataset.div){ if (setDiv(m, +b.dataset.div)) toast(`${moduleLabel(m)}：微步改成 ${ustepName(+b.dataset.div)}（MODE2..0 ＝ ${dmodeBits(+b.dataset.div)}）。`); else toast(divSource(m).how, 'err'); stepperTick(); renderBar(); renderPane(); o.changed?.(); }
     if (b.id === 'smPause'){ S.paused = !S.paused; S.pauseT = performance.now(); renderBar(); }
   });
   $('#smBar').addEventListener('change', e => { if (e.target.id === 'smDiv') S.div = +e.target.value; if (e.target.id === 'smLoad'){ setLoad(cur(), +e.target.value); o.changed?.(); } });

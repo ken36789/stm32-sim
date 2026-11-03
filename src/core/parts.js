@@ -113,7 +113,7 @@ const TB67 = [ds('TB67S128FTG Datasheet（Toshiba，PDF）', 'https://toshiba.se
   ds('Pololu TB67S128FTG 驅動板（腳位與設定說明）', 'https://www.pololu.com/product/2998')];
 const DRV = [['驅動 IC', 'Toshiba TB67S128FTG（P-VQFN64，CLK-IN 模式）'], ['微步', '全步～1/128，模組上的 DMODE 指撥開關'], ['馬達電源', '24 V（模組上的端子，6.5–44 V）'], ['邏輯電位', 'IOREF 接 3V3（2–5.5 V）']];
 MODULE_TYPES.stepper = {
-  name:'步進馬達（TB67S128FTG）', short:'馬達', w:24, d:28, pcb:0x1d5c38, motor:true,
+  name:'步進馬達套件（一體式，簡易接線）', short:'馬達套件', w:24, d:28, pcb:0x1d5c38, motor:true,
   pins:[['VCC', '邏輯電位 IOREF（接 3V3）'], ['GND', '接地'], ['CLK', 'STEP：每個上升緣前進一個微步（接計時器的 PWM 輸出）'], ['CW', 'CW/CCW：高電位順時針、低電位逆時針'], ['EN', 'ENABLE：高電位才會送電給馬達']],
   variants:[
     { id:'nema17', name:'NEMA 17 步進馬達 1.8°', part:'42 mm 雙極步進馬達（1.7 A）＋TB67S128FTG', grade:1, step:1.8, T:.40, J:5.4e-6, fc:250, rated:1.7, Iset:1.5, vmin:2, vmax:5.5,
@@ -122,6 +122,59 @@ MODULE_TYPES.stepper = {
       specs:[...DRV, ['步距角', '0.9°（一圈 400 個全步）'], ['保持轉矩', '0.44 N·m'], ['電流設定', '1.5 A'], ['轉子慣量', '68 g·cm²']], links:TB67 },
     { id:'nema23', name:'NEMA 23 步進馬達 1.8°', part:'57 mm 雙極步進馬達（2.8 A）＋TB67S128FTG', grade:3, step:1.8, T:1.26, J:2.8e-5, fc:220, rated:2.8, Iset:2.0, vmin:2, vmax:5.5, better:'扭力約 3 倍，帶重負載也能加速（驅動 IC 要加散熱片）',
       specs:[...DRV, ['步距角', '1.8°（一圈 200 個全步）'], ['保持轉矩', '1.26 N·m（額定 2.8 A）'], ['電流設定', '2.0 A（驅動板不加散熱約可連續 2.1 A）'], ['轉子慣量', '280 g·cm²']], links:TB67 },
+  ],
+};
+
+/* ---------- TB67S128FTG 驅動板＋步進馬達＋馬達電源（分開接線，每一支腳都要自己接） ---------- */
+// 腳位依 Pololu #2998 驅動板與 Toshiba TB67S128FTG datasheet；第三欄 'R' 表示在模組右側（電源與馬達那一側）
+const TB67_PINS = [
+  ['GND', '邏輯地：接 MCU 的 GND（一定要和 MCU 共地，STEP／DIR 才有參考電位；板上和右側 PGND 相通）'],
+  ['IOREF', '邏輯電位參考：接 MCU 的電源 3V3。LO0／LO1 會被上拉到這個電壓（2–5.5 V）'],
+  ['STBY', 'STANDBY：高電位＝工作、低電位＝待機（板上下拉，不接就不會動）。接 MCU GPIO；從低拉到高可以清除錯誤'],
+  ['EN', 'ENABLE：高電位才把電流送進馬達線圈（板上下拉）。接 MCU GPIO'],
+  ['RST', 'RESET：高電位時電氣角回到 45°、忽略 STEP（板上下拉）。不用可以不接，或接 GND'],
+  ['CLK', 'CLK（STEP）：每個上升緣前進一個微步。接計時器的 PWM 輸出（一般 GPIO 用程式切換也可以，但很慢）'],
+  ['DIR', 'CW/CCW（DIR）：高電位順時針、低電位逆時針（板上下拉）。接 MCU GPIO'],
+  ['MODE0', 'DMODE0：微步設定第 0 位元（板上下拉）。不接線時由模組上的跳線決定'],
+  ['MODE1', 'DMODE1：微步設定第 1 位元（板上下拉）。不接線時由模組上的跳線決定'],
+  ['MODE2', 'DMODE2：微步設定第 2 位元（板上下拉）。不接線時由模組上的跳線決定'],
+  ['LO0', 'LO0：錯誤旗標（開汲極，上拉到 IOREF）。低電位＝過電流或過熱。接 MCU GPIO 輸入'],
+  ['LO1', 'LO1：錯誤旗標（開汲極，上拉到 IOREF）。低電位＝馬達斷線或過熱。可以不接'],
+  ['VIN', '馬達電源輸入 6.5–44 V：接馬達電源（DC 變壓器）的 V+。絕對不能接 MCU 的 3V3／5V', 'R'],
+  ['PGND', '電源地：接馬達電源的 V−（板上和左側 GND 相通）', 'R'],
+  ['VCC', '板上 5 V 穩壓輸出（約 5 mA）：只能用來拉高 STBY／EN 等邏輯腳，不能接到電源軌或 MCU 的電源', 'R'],
+  ['A+', '馬達線圈 A＋：接步進馬達的 A+（常見黑線）', 'R'],
+  ['A-', '馬達線圈 A−：接步進馬達的 A−（常見綠線）', 'R'],
+  ['B+', '馬達線圈 B＋：接步進馬達的 B+（常見紅線）', 'R'],
+  ['B-', '馬達線圈 B−：接步進馬達的 B−（常見藍線）', 'R'],
+];
+MODULE_TYPES.tb67 = {
+  name:'TB67S128FTG 步進馬達驅動板', short:'TB67', w:24, d:58, big:true, pitch:4.4, pitchR:5, pcb:0x1f6f43, driver:true, bridge:[['GND', 'PGND']], tie:[['LO0', 'LO1']],
+  pins:TB67_PINS,
+  variants:[
+    { id:'tb67-carrier', name:'TB67S128FTG 驅動板（MODE 跳線版）', part:'Toshiba TB67S128FTG（P-VQFN64）', grade:2, vmin:6.5, vmax:44, heat:28,
+      specs:[['驅動 IC', 'Toshiba TB67S128FTG，CLK-IN 模式'], ['馬達電源 VIN', '6.5–44 V（低於約 6 V 會關閉輸出）'], ['邏輯輸入', '高電位 ≥ 2 V，最高 5.5 V'], ['電流限制', 'I ＝ VREF × 1.56 A（板上可變電阻）'], ['連續電流', '約 2.1 A／相（沒有散熱片）'], ['微步', '全步～1/128（MODE2..0）'], ['錯誤旗標', 'LO0／LO1：過電流、過熱、馬達斷線'], ['板上下拉', 'STBY、EN、RST、CLK、DIR、MODE0–2 不接時都是低電位']], links:TB67 },
+    { id:'tb67-sink', name:'TB67S128FTG 驅動板＋散熱片', part:'Toshiba TB67S128FTG＋鋁散熱片', grade:3, vmin:6.5, vmax:44, heat:15, better:'加散熱片後晶片溫度上升約少一半，可以開到 2.5 A 以上',
+      specs:[['驅動 IC', 'Toshiba TB67S128FTG，CLK-IN 模式'], ['馬達電源 VIN', '6.5–44 V'], ['電流限制', 'I ＝ VREF × 1.56 A'], ['連續電流', '加散熱片約 3 A／相'], ['微步', '全步～1/128（MODE2..0）'], ['錯誤旗標', 'LO0／LO1']], links:TB67 },
+  ],
+};
+const MOTOR_SPEC = (step, t, a, j) => [['步距角', `${step}°（一圈 ${Math.round(360 / step)} 個全步）`], ['保持轉矩', `${t} N·m`], ['額定電流', `${a} A／相`], ['轉子慣量', `${j} g·cm²`], ['接線', 'A+ 黑、A− 綠、B+ 紅、B− 藍（常見顏色，依廠商不同）'], ['線圈電阻', '量 A+／A− 之間有幾歐姆＝同一組線圈']];
+MODULE_TYPES.motor = {
+  name:'步進馬達（雙極，4 線）', short:'馬達', w:24, d:28, pcb:0x2a2d31, motor:true,
+  pins:[['A+', '線圈 A 的一端（常見黑線）：接驅動板 A+'], ['A-', '線圈 A 的另一端（常見綠線）：接驅動板 A−'], ['B+', '線圈 B 的一端（常見紅線）：接驅動板 B+'], ['B-', '線圈 B 的另一端（常見藍線）：接驅動板 B−']],
+  variants:[
+    { id:'nema17', name:'NEMA 17 步進馬達 1.8°', part:'17HS4401（42 mm，1.7 A）', grade:1, step:1.8, T:.40, J:5.4e-6, fc:250, rated:1.7, specs:MOTOR_SPEC(1.8, .40, 1.7, 54), links:[ds('搜尋 17HS4401 Datasheet', g('17HS4401 stepper motor'))] },
+    { id:'nema17-09', name:'NEMA 17 高解析 0.9°', part:'42 mm 0.9° 雙極步進馬達（1.7 A）', grade:2, step:.9, T:.44, J:6.8e-6, fc:180, rated:1.7, better:'一圈 400 個全步，定位更細；最高轉速比較低', specs:MOTOR_SPEC(.9, .44, 1.7, 68), links:[ds('搜尋 0.9° NEMA 17 Datasheet', g('NEMA 17 0.9 degree stepper motor'))] },
+    { id:'nema23', name:'NEMA 23 步進馬達 1.8°', part:'57 mm 雙極步進馬達（2.8 A）', grade:3, step:1.8, T:1.26, J:2.8e-5, fc:220, rated:2.8, better:'扭力約 3 倍；額定 2.8 A，驅動板要加散熱片', specs:MOTOR_SPEC(1.8, 1.26, 2.8, 280), links:[ds('搜尋 NEMA 23 Datasheet', g('NEMA 23 2.8A stepper motor'))] },
+  ],
+};
+MODULE_TYPES.psu = {
+  name:'馬達電源（DC 變壓器）', short:'電源', w:24, d:28, pcb:0x26292d, psu:true,
+  pins:[['V+', '電源正極：接驅動板 VIN（不能接 MCU 的任何腳位或電源軌）'], ['V-', '電源負極：接驅動板 PGND，並和 MCU 的 GND 共地']],
+  variants:[
+    { id:'psu-24', name:'24 V 3 A 變壓器', part:'24 VDC 3 A 電源供應器', grade:2, v:24, amp:3, specs:[['輸出', '24 V／3 A'], ['適合', '兩顆 NEMA 17，高速扭力比較好'], ['保護', '短路時自動關閉輸出']], links:[] },
+    { id:'psu-12', name:'12 V 2 A 變壓器', part:'12 VDC 2 A 電源供應器', grade:1, v:12, amp:2, specs:[['輸出', '12 V／2 A'], ['適合', '一般用途；轉速高時扭力下降比 24 V 快'], ['保護', '短路時自動關閉輸出']], links:[] },
+    { id:'psu-5', name:'5 V USB 充電器（電壓不夠）', part:'5 VDC 2 A USB 電源', grade:1, v:5, amp:2, specs:[['輸出', '5 V／2 A'], ['注意', 'TB67S128FTG 至少要 6.5 V，接上去不會轉（低電壓保護）']], links:[] },
   ],
 };
 
@@ -143,8 +196,8 @@ Object.assign(MODULE_TYPES, {
     ] }),
 });
 
-export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay', 'tc', 'flash', 'can', 'stepper', 'la_i2c', 'la_uart', 'la_spi', 'la_can'];
-export const MODULE_GROUPS = [['輸出', ['led', 'rgb', 'buzzer', 'relay']], ['輸入與感測', ['button', 'pir', 'pot', 'temp']], ['SPI／CAN 元件', ['tc', 'flash', 'can']], ['馬達', ['stepper']], ['量測儀器（邏輯分析儀）', ['la_i2c', 'la_uart', 'la_spi', 'la_can']]];
+export const TYPE_ORDER = ['led', 'rgb', 'button', 'pir', 'pot', 'temp', 'buzzer', 'relay', 'tc', 'flash', 'can', 'tb67', 'motor', 'psu', 'stepper', 'la_i2c', 'la_uart', 'la_spi', 'la_can'];
+export const MODULE_GROUPS = [['輸出', ['led', 'rgb', 'buzzer', 'relay']], ['輸入與感測', ['button', 'pir', 'pot', 'temp']], ['SPI／CAN 元件', ['tc', 'flash', 'can']], ['步進馬達', ['tb67', 'motor', 'psu', 'stepper']], ['量測儀器（邏輯分析儀）', ['la_i2c', 'la_uart', 'la_spi', 'la_can']]];
 export const variantOf = (type, vid) => MODULE_TYPES[type].variants.find(v => v.id === vid) || MODULE_TYPES[type].variants[0];
 export const MAX_MODULES = 12;
 export const DEFAULT_MODULES = [

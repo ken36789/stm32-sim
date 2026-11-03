@@ -354,3 +354,51 @@ body.la-open .app{visibility:hidden}
 }
 .addgroup{display:flex;flex-direction:column;gap:6px}
 .addgroup small{color:var(--muted);font-size:11.5px}
+/* TB67S128FTG：接線圖與接線表 */
+.tb-svg{width:100%;height:auto;display:block;background:var(--code-bg);border-radius:10px;border:1px solid var(--line)}
+.tb-box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}
+.tb-drv{fill:rgba(31,111,67,.12);stroke:#2f8f5b}
+.tb-miss{fill:none;stroke-dasharray:4 3}
+.tb-t{font:700 11px var(--f-mono);fill:var(--fg)}
+.tb-m{font:500 9px var(--f-body);fill:var(--muted)}
+.tb-p{font:600 10px var(--f-mono);fill:var(--fg)}
+.tb-q{font:500 9.5px var(--f-mono);fill:var(--muted)}
+.tb-x{font:700 11px var(--f-mono);fill:var(--err)}
+.tb-mot{fill:none;stroke:var(--muted);stroke-width:1.5}
+.tb-s-ok{stroke:var(--ok);fill:var(--ok);color:var(--ok)}
+.tb-s-err{stroke:var(--err);fill:var(--err);color:var(--err)}
+.tb-s-warn{stroke:var(--warn);fill:var(--warn);color:var(--warn)}
+.tb-s-info{stroke:var(--info);fill:var(--info);color:var(--info)}
+.tb-s-opt{stroke:var(--muted);fill:var(--muted);color:var(--muted)}
+.tb-w{fill:none;stroke-width:2;stroke-linecap:round}
+.tb-dash{stroke-dasharray:3 3}
+.tb-dot{stroke:none}
+.tb-leg{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;margin:6px 0 0}
+.tb-tbl{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.tb-h,.tb-r{display:grid;grid-template-columns:76px minmax(0,1.25fr) minmax(0,1fr);gap:8px;padding:7px 9px;text-align:left}
+.tb-h{background:var(--surface-2);font:600 11px var(--f-body);color:var(--muted)}
+.tb-r{appearance:none;border:0;border-top:1px solid var(--line);background:none;color:inherit;font:inherit;cursor:pointer;align-items:start;-webkit-tap-highlight-color:transparent}
+.tb-r:hover{background:var(--surface-2)}
+.tb-r.err{box-shadow:inset 3px 0 0 var(--err)}
+.tb-r.warn{box-shadow:inset 3px 0 0 var(--warn)}
+.tb-n{display:flex;flex-wrap:wrap;align-items:center;gap:4px;min-width:0}
+.tb-n i{font-style:normal;width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;font:700 11px/1 var(--f-mono);color:#fff;background:var(--muted);flex:none}
+.tb-r.ok .tb-n i{background:var(--ok)}
+.tb-r.err .tb-n i{background:var(--err)}
+.tb-r.warn .tb-n i{background:var(--warn)}
+.tb-r.info .tb-n i{background:var(--info)}
+.tb-r.opt .tb-n i{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.tb-n b{font:600 12.5px var(--f-mono)}
+.tb-n small{width:100%;font-size:10px;color:var(--muted)}
+.tb-want{font-size:12px;line-height:1.45;min-width:0}
+.tb-want small{display:block;color:var(--muted);font-size:10.5px;margin-top:2px}
+.tb-now{font:500 11.5px/1.45 var(--f-mono);overflow-wrap:anywhere;min-width:0}
+.tb-now em{color:var(--muted);font-style:normal}
+.tb-now small{display:block;font:600 10.5px/1.4 var(--f-body);margin-top:2px}
+.tb-now small.err{color:var(--err)}
+.tb-now small.warn{color:var(--warn)}
+.tb-now small.info{color:var(--info)}
+.tb-bad{color:var(--err)}
+@media (max-width:420px){ .tb-h,.tb-r{grid-template-columns:64px minmax(0,1.2fr) minmax(0,1fr);gap:6px;padding:7px} }
+.sm-lock{display:block;width:100%;font-size:11px;color:var(--warn);margin-top:2px}
+.sm-us button:disabled{opacity:.45;cursor:not-allowed}

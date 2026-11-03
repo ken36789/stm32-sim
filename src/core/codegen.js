@@ -3,6 +3,7 @@ import { MODULE_TYPES, variantOf } from './parts.js';
 import { bench, netInfo, moduleLabel, isAnalyzer } from './sim.js';
 import { sdkFor } from './sdk.js';
 import { SPI_TYPES, SPI_PINS } from './buses.js';
+import { drvStatus, motorOfDriver } from './steppers.js';
 
 const SIGNAL = { led:['SIG'], rgb:['R', 'G', 'B'], button:['OUT'], pir:['OUT'], buzzer:['SIG'], relay:['IN'], pot:['OUT'] };
 
@@ -32,7 +33,22 @@ export function suggestWiring(){
   };
   const devices = bench.modules.filter(m => !isAnalyzer(m)), analyzers = bench.modules.filter(isAnalyzer);
   let firstSpi = null, nStep = 0;
+  // 驅動板的訊號腳：數位腳不夠時也可以用類比腳（大多數 MCU 的類比腳也能當 GPIO）
+  const gpioPin = () => nextPin(digital) || nextPin(analog);
+  const drivers = devices.filter(m => m.type === 'tb67'), motors = devices.filter(m => m.type === 'motor'), psu = devices.find(m => m.type === 'psu');
+  drivers.forEach((d, k) => {
+    const P = n => `${d.id}.${n}`, mot = motors[k];
+    // 馬達電源：變壓器 V+ → VIN、V− → PGND（變壓器每支腳最多兩條線，第三塊以後從前一塊驅動板串接）
+    if (psu){ pairs.push([k < 2 ? `${psu.id}.V+` : `${drivers[k - 1].id}.VIN`, P('VIN')], [k < 2 ? `${psu.id}.V-` : `${drivers[k - 1].id}.PGND`, P('PGND')]); }
+    pairs.push([rail('-'), P('GND')], [rail('+'), P('IOREF')]);             // 和 MCU 共地；邏輯電位 3.3 V
+    const clk = b.step && nStep < b.step.length ? take(b.step[nStep].pin) : gpioPin(); nStep++;
+    pairs.push([clk, P('CLK')]);
+    for (const n of ['DIR', 'EN', 'STBY']) pairs.push([gpioPin(), P(n)]);
+    pairs.push([gpioPin(), P('LO0')], [P('LO0'), P('LO1')]);                // 兩個開汲極錯誤旗標並接到同一支 GPIO
+    if (mot) for (const n of ['A+', 'A-', 'B+', 'B-']) pairs.push([P(n), `${mot.id}.${n}`]);
+  });
   for (const m of devices){
+    if (m.type === 'tb67' || m.type === 'motor' || m.type === 'psu') continue;
     const v = variantOf(m.type, m.variant), P = n => `${m.id}.${n}`;
     power(m, v);
     if (m.type === 'temp'){ chain('scl', b.i2c.scl, P('SCL')); chain('sda', b.i2c.sda, P('SDA')); continue; }
@@ -297,16 +313,36 @@ static void ${s}_Read8(${U8} *out)
   return '';
 }
 
+/** TB67S128FTG 驅動板（分開接線）：STANDBY → ENABLE → 方向，錯誤旗標 LO0／LO1 並接到一支輸入腳 */
+function tb67Channel(d, i, nm, kk, sdk, sug, mods, c, info){
+  const { defs, define, pre, drivers, report, stepInit, pinLabel, P, b } = c, sig = n => signalMcu(d, n, sug);
+  const mot = motorOfDriver(d) || mods.filter(m => m.type === 'motor')[mods.filter(m => m.type === 'tb67').indexOf(d)];
+  const mv = mot ? variantOf(mot.type, mot.variant) : { step:1.8 }, div = drvStatus(d).div, label = moduleLabel(d);
+  for (const [pin, suffix, note] of [['STBY', 'STBY', 'STANDBY（高電位工作）'], ['EN', 'EN', 'ENABLE（高電位送電給馬達）'], ['DIR', 'DIR', 'CW/CCW（高電位順時針）']])
+    if (sig(pin)) define(`${nm}_${suffix}`, sig(pin), `${label} ${pin} → ${pinLabel(sig(pin))}：${note}`, 'out');
+  if (sig('LO0')) define(`${nm}_FAULT`, sig('LO0'), `${label} LO0／LO1 → ${pinLabel(sig('LO0'))}：錯誤旗標（低電位＝有錯誤）`, 'in', true);
+  const st = sdk.step(b, kk, nm); stepInit.push(...st.init); drivers.push(st.fn);
+  if (sig('STBY')) pre.push(sdk.pin(`${nm}_STBY`, 1) + `   // ${label}：離開待機（STANDBY 高電位）`);
+  if (sig('EN')) pre.push(sdk.pin(`${nm}_EN`, 1) + `   // ${label}：打開輸出（ENABLE 高電位）`);
+  if (sig('DIR')) pre.push(sdk.pin(`${nm}_DIR`, 1));
+  defs.push(`#define ${nm}_MICROSTEP${' '.repeat(Math.max(1, 6 - String(i + 1).length))}${div}       // ${label} 的 MODE2..0（${['000', '001', '010', '011', '100', '101', '110', '111'][Math.log2(div)]}），要和驅動板的設定一樣`,
+    `#define ${nm}_STEPS_REV    (${Math.round(360 / mv.step)} * ${nm}_MICROSTEP)   // ${mv.step}° 馬達：一圈 ${Math.round(360 / mv.step)} 個全步 × 微步`);
+  if (sig('LO0') && sig('STBY')) report.push(`if (!${sdk.read(`${nm}_FAULT`)}) {          // LO0／LO1 被拉低：驅動板偵測到錯誤（過電流、馬達斷線或過熱）`,
+    `  ${P}("${nm}：${label} 回報錯誤，STANDBY 拉低再拉高來清除\\r\\n");`, `  ${sdk.pin(`${nm}_STBY`, 0)}`, `  ${sdk.delay(1, b)}`, `  ${sdk.pin(`${nm}_STBY`, 1)}`, '}');
+  info.push({ nm, m:d, i, dir:!!sig('DIR') });
+}
+
 /** 步進馬達：M1 來回移動（梯形加減速），M2 連續轉動（速度跟著旋鈕或定時切換，加速度受限） */
 function stepperCode(b, sdk, mods, sug, c){
   const { defs, define, pre, drivers, loop, report, stepInit, pinLabel, P } = c;
-  const steppers = mods.filter(m => m.type === 'stepper').slice(0, 2);
+  const steppers = mods.filter(m => m.type === 'stepper' || m.type === 'tb67').slice(0, 2);
   const pot = mods.find(m => m.type === 'pot');
   const info = [];
   steppers.forEach((m, i) => {
-    const nm = `M${i + 1}`, v = variantOf(m.type, m.variant), sig = n => signalMcu(m, n, sug), mo = m.st.mot || { div:16 };
-    const clk = sig('CLK'), k = b.step.findIndex(x => b.header.find(h => h.label === x.pin)?.mcu === clk);
+    const nm = `M${i + 1}`, sig = n => signalMcu(m, n, sug), clk = sig('CLK'), k = b.step.findIndex(x => b.header.find(h => h.label === x.pin)?.mcu === clk);
     const kk = k >= 0 ? k : i;
+    if (m.type === 'tb67'){ tb67Channel(m, i, nm, kk, sdk, sug, mods, c, info); return; }
+    const v = variantOf(m.type, m.variant), mo = { div:m.st.mot ? m.st.mot.jdiv : 16 };
     if (sig('CW')) define(`${nm}_DIR`, sig('CW'), `${moduleLabel(m)} CW → ${pinLabel(sig('CW'))}（高電位順時針）`, 'out');
     if (sig('EN')) define(`${nm}_EN`, sig('EN'), `${moduleLabel(m)} EN → ${pinLabel(sig('EN'))}（高電位啟用）`, 'out');
     const st = sdk.step(b, kk, nm); stepInit.push(...st.init); drivers.push(st.fn);
@@ -376,7 +412,7 @@ export function exampleCode(){
   const b = bench.board, sdk = sdkFor(b), mods = bench.modules, sug = suggestWiring(), P = sdk.print;
   const U8 = b.sdk === 'c2000' ? 'uint16_t' : 'uint8_t';
   const defs = [], cfg = [], drivers = [], init = [], blink = [], loop = [], report = [], slow = [], vars = ['uint32_t tick = 0;'], ports = new Set();
-  const used = { i2c:mods.some(m => m.type === 'temp'), adc:mods.some(m => m.type === 'pot'), spi:!!b.spi && mods.some(m => SPI_TYPES.includes(m.type)), can:!!b.can && mods.some(m => m.type === 'can'), step:!!b.step && mods.some(m => m.type === 'stepper') };
+  const used = { i2c:mods.some(m => m.type === 'temp'), adc:mods.some(m => m.type === 'pot'), spi:!!b.spi && mods.some(m => SPI_TYPES.includes(m.type)), can:!!b.can && mods.some(m => m.type === 'can'), step:!!b.step && mods.some(m => m.type === 'stepper' || m.type === 'tb67') };
   const pre = [], spiDevs = [];
   const name = (m, base) => { const same = mods.filter(x => x.type === m.type); return same.length > 1 ? `${base}${same.indexOf(m) + 1}` : base; };
   const pinLabel = mcu => { const h = b.header.find(x => x.mcu === mcu); return h && h.label !== mcu ? `${h.label}（${mcu}）` : mcu; };
@@ -449,7 +485,7 @@ export function exampleCode(){
       report.push('{', `  ${U8} d[8];`, `  ${s}_Read8(d);`, `  ${P}("${moduleLabel(m)} 位址 0x000000：%02X %02X %02X %02X %02X %02X %02X %02X（%c%c%c%c%c%c%c%c）\\r\\n", d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);`, '}');
     } else report.push('{', `  float t = ${s}_Read();`, '  if (t > -100.0f) {', ...tempLine(moduleLabel(m), 't', null).map(l => '    ' + l), `  } else ${P}("${moduleLabel(m)}：熱電偶沒有接好（斷線）\\r\\n");`, '}');
   }
-  if (used.step) stepperCode(b, sdk, mods, sug, { defs, define, pre, drivers, loop, report, vars, stepInit, pinLabel, P, U8 });
+  if (used.step) stepperCode(b, sdk, mods, sug, { defs, define, pre, drivers, loop, report, vars, stepInit, pinLabel, P, U8, b });
   if (used.can){
     const c = sdk.can(b);
     defs.push('#define CAN_TX_ID      0x123   // MCU 送出的訊框 ID', '#define CAN_RX_ID      0x200   // 收發器模組內建的測試節點送出的 ID');

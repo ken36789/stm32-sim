@@ -6,7 +6,8 @@ import { MODULE_TYPES, MODULE_GROUPS, variantOf, MAX_MODULES } from '../core/par
 import { bench, SIM, moduleLabel, moduleById, moduleState, sensorTemp, supply, isAnalyzer } from '../core/sim.js';
 import { tcTemp, canLink, nodeOfCan, spiDevices, CAN } from '../core/buses.js';
 import { probeSource, probeOk } from '../core/analyzer.js';
-import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo } from '../core/steppers.js';
+import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo, drvOf, drvStatus, motorOfDriver, divSource, coilMap, FAULTS, VREF_GAIN } from '../core/steppers.js';
+import { pinTable, wiringSvg } from './tb67guide.js';
 
 const GRADE = ['', '入門', '進階', '高階'];
 const RH_DEV = ['sht3x', 'aht20', 'hdc1080'];
@@ -99,9 +100,24 @@ function controls(m, v){
     return `<label class="ctl" for="tcT">熱電偶溫度<input type="range" id="tcT" min="${v.dev === 'max31855' ? -50 : 0}" max="400" value="${t}"><output id="tcTOut">${t} °C</output></label>
       <label class="ctl" for="tcOpen" style="grid-template-columns:auto 1fr">熱電偶斷線<input type="checkbox" id="tcOpen" ${s.open ? 'checked' : ''} style="width:auto;justify-self:start"></label>`;
   }
+  if (m.type === 'tb67'){
+    const ds = drvOf(m), src = divSource(m), mot = motorOfDriver(m), a = (ds.vref * VREF_GAIN).toFixed(2);
+    return `<label class="ctl" for="stVref">VREF<input type="range" id="stVref" min="0.2" max="2" step="0.02" value="${ds.vref}"><output id="stVrefOut">${ds.vref.toFixed(2)} V</output></label>
+      <p class="note" id="stVrefNote" style="margin-top:-4px">電流限制 ＝ VREF × 1.56 ＝ <b>${a} A</b>${mot ? `（${esc(moduleLabel(mot))} 額定 ${variantOf(mot.type, mot.variant).rated} A）` : ''}。用螺絲起子轉板上的藍色可變電阻；最好在接馬達之前先調好。</p>
+      <label class="ctl" for="stJdiv" style="grid-template-columns:auto 1fr">MODE 跳線<select id="stJdiv" ${src.can ? '' : 'disabled'}>${USTEP.map(d => `<option value="${d}" ${d === src.div ? 'selected' : ''}>${ustepName(d)} · MODE2..0 ${dmodeBits(d)}</option>`).join('')}</select></label>
+      <p class="note" style="margin-top:-4px">${esc(src.how)}。</p>
+      ${mot ? '<button class="btn primary la-open" data-act="stepper" type="button">打開步進馬達示波器（波形、加減速、微步比較）</button>' : ''}`;
+  }
+  if (m.type === 'psu'){ const on = m.st.on !== false; return `<button class="btn sm ${on ? '' : 'primary'}" data-act="psu" type="button">${on ? '關閉電源開關' : '打開電源開關'}</button><p class="note">建議：接線、插拔馬達線時先關電源，接好再打開。關掉再打開也會清除驅動板鎖住的錯誤。</p>`; }
+  if (m.type === 'motor'){
+    const mo = motorOf(m), src = divSource(m);
+    return `<label class="ctl" for="stLoad" style="grid-template-columns:auto 1fr">負載<select id="stLoad">${LOADS.map(l => `<option value="${l.id}" ${l.id === mo.load ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+      <p class="note">微步：${ustepName(src.div)}（${esc(src.how)}）。</p>
+      <button class="btn primary la-open" data-act="stepper" type="button">打開步進馬達示波器（波形、加減速、微步比較）</button>`;
+  }
   if (m.type === 'stepper'){
     const mo = motorOf(m);
-    return `<label class="ctl" for="stDiv" style="grid-template-columns:auto 1fr">微步（DMODE）<select id="stDiv">${USTEP.map(d => `<option value="${d}" ${d === mo.div ? 'selected' : ''}>${ustepName(d)} · DMODE ${dmodeBits(d)}</option>`).join('')}</select></label>
+    return `<label class="ctl" for="stDiv" style="grid-template-columns:auto 1fr">微步（DMODE）<select id="stDiv">${USTEP.map(d => `<option value="${d}" ${d === mo.jdiv ? 'selected' : ''}>${ustepName(d)} · DMODE ${dmodeBits(d)}</option>`).join('')}</select></label>
       <label class="ctl" for="stLoad" style="grid-template-columns:auto 1fr">負載<select id="stLoad">${LOADS.map(l => `<option value="${l.id}" ${l.id === mo.load ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
       <button class="btn primary la-open" data-act="stepper" type="button">打開步進馬達示波器（波形、加減速、微步比較）</button>`;
   }
@@ -123,6 +139,8 @@ function moduleView(id){
     <div class="live" id="inspLive"></div>
     ${controls(m, v)}
   </section>
+  ${m.type === 'tb67' ? `<section class="insp-sec"><span class="eyebrow">接線圖（依目前的接線）</span>${wiringSvg(m)}</section>
+  <section class="insp-sec"><span class="eyebrow">每一支腳怎麼接</span>${pinTable(m)}</section>` : ''}
   <section class="insp-sec">
     <span class="eyebrow">更換型號</span>
     <ul class="plist vlist">${T.variants.map(x => `<li><button data-act="variant" data-id="${x.id}" type="button" class="${x.id === v.id ? 'cur' : ''}"><span><strong>${esc(x.name)}</strong><small>${esc(x.part)}${x.better && x.grade > v.grade ? ` · <b class="up">升級：${esc(x.better)}</b>` : ''}</small></span>${x.id === v.id ? '<span class="grade g3">使用中</span>' : gradeTag(x.grade)}</button></li>`).join('')}</ul>
@@ -160,6 +178,20 @@ export function updateLive(){
     const mem = m.st.mem, bytes = Array.from({ length:16 }, (_, i) => (mem && mem.has(i)) ? mem.get(i) : 0xFF);
     t = `${spiDevices().some(d => d.m === m) ? '已連上 SPI 匯流排' : '目前沒有連上 SPI 匯流排'}\n位址 0x000000：${bytes.map(x => x.toString(16).toUpperCase().padStart(2, '0')).join(' ')}\n（Flash 斷電後資料仍然保留）`;
   }
+  if (m.type === 'tb67'){
+    const st = drvStatus(m), ds = drvOf(m), mot = motorOfDriver(m);
+    t = st.damaged ? '已燒毀：邏輯腳接到了超過 5.5 V 的電壓' : ds.fault ? `錯誤：${FAULTS[ds.fault].name}（${FAULTS[ds.fault].lo}）\n${FAULTS[ds.fault].why}\n清除：STANDBY 拉低再拉高，或關掉馬達電源再打開` : !st.vm ? 'VIN 沒有電：接馬達電源的 V+／V−' : !st.vmOk ? `VIN 只有 ${st.vm} V：低於 6.5 V，低電壓保護關閉輸出` : !st.gndMcu ? '沒有和 MCU 共地：看不到 STEP／DIR 訊號' : !st.stby ? 'STANDBY 是低電位：待機中' : !st.en ? 'ENABLE 是低電位：輸出關閉（馬達沒有出力）' : st.rst ? 'RESET 是高電位：電氣角固定在 45°，忽略 STEP' : !mot ? 'ENABLE 打開但沒有接馬達' : '運作中：線圈有電流';
+    t += `\nVIN ${st.vm} V · 電流限制 ${st.ilim.toFixed(2)} A · 晶片 ${ds.temp.toFixed(0)} °C${ds.temp > 120 ? '（很燙）' : ''}\nSTBY ${st.stby ? 'H' : 'L'} · EN ${st.en ? 'H' : 'L'} · RST ${st.rst ? 'H' : 'L'} · DIR ${st.dir > 0 ? 'H（順時針）' : 'L（逆時針）'} · ${ustepName(st.div)}`;
+  }
+  if (m.type === 'psu'){
+    const on = m.st.on !== false, drvs = bench.modules.filter(d => d.type === 'tb67' && drvStatus(d).vm > 0);
+    t = `${on ? '開' : '關'} · 輸出 ${on ? v.v : 0} V${drvs.length ? `\n供電給 ${drvs.map(moduleLabel).join('、')}` : '\n還沒有供電給驅動板（V+ → VIN、V− → PGND）'}`;
+  }
+  if (m.type === 'motor'){
+    const i = motorInfo(m), cm = coilMap(m);
+    t = !cm.drv ? '沒有接到驅動板（A+／A−／B+／B− 接驅動板右側）' : !cm.ok ? `線圈接法有問題（${cm.bad === 'open' ? '有線沒接' : cm.bad === 'mix' ? '接錯相' : '短路'}）` : i.src === 'manual' ? '示波器的手動測試正在控制這顆馬達' : !i.en ? `${moduleLabel(cm.drv)} 沒有送電給線圈` : i.pps ? `STEP ${Math.round(i.pps)} pps，${i.dir * cm.sigma > 0 ? '順時針' : '逆時針'}` : '已送電，停住不動（保持轉矩）';
+    t += `\n轉速約 ${Math.abs(i.rpm).toFixed(1)} RPM，位置 ${i.revs.toFixed(2)} 圈${i.lost ? `\n失步：少走了 ${Math.abs(i.lost)} 個全步` : ''}`;
+  }
   if (m.type === 'stepper'){
     const i = motorInfo(m);
     t = !i.ok ? '驅動模組沒有供電（VCC 接 3V3、GND 接地）' : i.src === 'manual' ? '示波器的手動測試正在控制這顆馬達' : !i.en ? 'ENABLE 是低電位：馬達沒有送電' : i.k < 0 ? 'CLK 沒有接到計時器的 PWM（STEP）腳' : i.pps ? `STEP ${Math.round(i.pps)} pps，${i.dir > 0 ? '順時針' : '逆時針'}` : '已送電，停住不動（保持轉矩）';
@@ -191,7 +223,9 @@ export function initInspector(actions){
       case 'add': act.addModule(b.dataset.type); break;
       case 'warm': act.warm(insp.id); break;
       case 'analyzer': act.openAnalyzer(insp.id); break;
-      case 'stepper': act.openStepper(insp.id); break;
+      case 'stepper': { const m = moduleById(insp.id), tgt = m?.type === 'tb67' ? motorOfDriver(m) : m; if (tgt) act.openStepper(tgt.id); break; }
+      case 'psu': { const m = moduleById(insp.id); if (m){ act.setStep(insp.id, 'psu', m.st.on === false); renderInspector(); } break; }
+      case 'pinmark': act.markPin?.(b.dataset.id); break;
       case 'erase': act.eraseFlash(insp.id); break;
       case 'node': act.setNode(insp.id, !nodeOfCan(moduleById(insp.id)).on); break;
       case 'motion': act.motion(insp.id); break;
@@ -204,10 +238,12 @@ export function initInspector(actions){
     if (e.target.id === 'ambRH'){ SIM.ambient.RH = +e.target.value; $('#ambRHOut').textContent = SIM.ambient.RH + ' %'; act.changed(); }
     if (e.target.id === 'tcT'){ $('#tcTOut').textContent = e.target.value + ' °C'; act.setTc(insp.id, 'tcT', +e.target.value); }
     if (e.target.id === 'tcOpen') act.setTc(insp.id, 'open', e.target.checked);
+    if (e.target.id === 'stVref'){ const v = +e.target.value, a = v * VREF_GAIN; $('#stVrefOut').textContent = v.toFixed(2) + ' V'; act.setStep(insp.id, 'vref', v); const n = $('#stVrefNote b'); if (n) n.textContent = a.toFixed(2) + ' A'; }
   });
   el.addEventListener('change', e => {
     if (e.target.id === 'stDiv') act.setStep(insp.id, 'div', +e.target.value);
     if (e.target.id === 'stLoad') act.setStep(insp.id, 'load', +e.target.value);
+    if (e.target.id === 'stJdiv') act.setStep(insp.id, 'div', +e.target.value);
   });
   const hold = (down, e) => { if (e.target.id !== 'holdBtn') return; e.preventDefault(); if (down) try { e.target.setPointerCapture(e.pointerId); } catch (_){} act.press(insp.id, down); };
   el.addEventListener('pointerdown', e => hold(true, e));
