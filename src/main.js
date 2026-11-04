@@ -519,28 +519,35 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
   let saved = restore(), shared = false;
   const hm = location.hash.match(/^#p=([\w-]+)$/);
   if (hm){ try { saved = await decodeShare(hm[1]); shared = true; } catch (e){ toast('分享網址無法開啟：' + e.message, 'err'); } history.replaceState(null, '', location.pathname + location.search); }
-  if (saved && Array.isArray(saved.modules)) loadBench(saved);
-  else { resetBench(); setBoard(saved && BOARD_BY_ID[saved.board] ? saved.board : DEFAULT_BOARD, true); DEFAULT_MODULES.forEach(m => addModule(m.type, m.variant, true)); }
+  // 存檔讀不進來（例如舊版格式或資料損壞）時改用預設工作台，不要讓整個網站打不開
+  const fallback = () => { resetBench(); setBoard(DEFAULT_BOARD, true); DEFAULT_MODULES.forEach(m => addModule(m.type, m.variant, true)); };
+  try { if (saved && Array.isArray(saved.modules)) loadBench(saved); else { resetBench(); setBoard(saved && BOARD_BY_ID[saved.board] ? saved.board : DEFAULT_BOARD, true); DEFAULT_MODULES.forEach(m => addModule(m.type, m.variant, true)); } }
+  catch (e){ console.error(e); saved = null; shared = false; fallback(); setTimeout(() => toast('上次的工作台讀取失敗，已改用預設工作台。', 'err'), 800); }
   renderHint(); renderBoardInfo();
   log('按「編譯並燒錄」把 main.c 寫進開發板的 Flash。快捷鍵 Ctrl/⌘ + S。', 'ld');
   pushLine('— 序列埠已開啟，等待開發板輸出 —', 'sys'); UI.serialUnread = 0; $('#bSerial').hidden = true;
   let ok3d = false;
-  try { await Promise.race([Promise.all([document.fonts.load('600 24px "JetBrains Mono"'), document.fonts.load('600 24px "Chakra Petch"')]), new Promise(r => setTimeout(r, 1500))]); } catch (_){}
+  try { await Promise.race([Promise.all([document.fonts.load('600 24px "JetBrains Mono"'), document.fonts.load('600 24px "Chakra Petch"')]), new Promise(r => setTimeout(r, 1500))]); } catch (_){ /* 字型載入失敗不影響 */ }
   try { initScene($('#stage')); setupPointer(); ok3d = true; } catch (e){ console.error(e); }
   $('#loading').hidden = ok3d;
   if (!ok3d) $('#loading').textContent = '這個裝置無法啟用 3D 畫面（WebGL）。仍可在右側面板接線、檢測、編譯與燒錄。';
-  if (saved && Array.isArray(saved.wires)) loadWires(saved);
-  else { suggestWiring().forEach(([a, b]) => addWire(a, b, null, true)); refreshNet(); }
+  try {
+    if (saved && Array.isArray(saved.wires)) loadWires(saved);
+    else { suggestWiring().forEach(([a, b]) => addWire(a, b, null, true)); refreshNet(); }
+  } catch (e){ console.error(e); clearWires(true); refreshNet(); }
   if (saved && typeof saved.code === 'string'){ ta.value = saved.code; UI.lastExample = saved.example ? saved.code : null; syncEditor(); }
   else setCode(exampleCode(), true);
   fillSelects(); renderPinMap(); renderInspector();
   afterWiring(); setUsb(true); updateButtons(); renderFlow();
+  if (ok3d) requestAnimationFrame(loop);                 // 3D 先動起來；下面的選用功能出錯也不影響畫面
+  window.__mcuReady = true;
   if (saved?.sound){ audio.enabled = true; $('#btnSound').textContent = '聲音：開'; $('#btnSound').setAttribute('aria-pressed', 'true'); document.addEventListener('pointerdown', ensureAudio, { once:true }); }
   if (saved && TABS.includes(saved.tab)) showTab(saved.tab);
   if (shared){ store(); toast(`已開啟分享的作品：${bench.board.name}、${bench.modules.length} 個模組、${wires.length} 條線。按「檢測 → 編譯 → 燒錄」就能執行。`); track('open-shared'); }
-  initLearn({ shared, applyProject, benchLoaded, syncWiring, quickFlash, setCode, toast, showTab, markPins, openInspector, track, store,
-    running:() => flashDone() && runningNow(), flashSeq:() => flashSeq, snapshotNow:() => ({ ...snapshot({ code:ta.value }), example:isExampleCode() }) });
-  initAnalytics();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
-  if (ok3d) requestAnimationFrame(loop);
+  const safely = (name, f) => { try { f(); } catch (e){ console.error(name, e); } };
+  safely('learn', () => initLearn({ shared, applyProject, benchLoaded, syncWiring, quickFlash, setCode, toast, showTab, markPins, openInspector, track, store,
+    running:() => flashDone() && runningNow(), flashSeq:() => flashSeq, snapshotNow:() => ({ ...snapshot({ code:ta.value }), example:isExampleCode() }) }));
+  safely('analytics', initAnalytics);
+  // 離線快取：有些 App 內建瀏覽器（例如 LINE）沒有 service worker，沒有就略過
+  safely('sw', () => { const sw = navigator.serviceWorker; if (sw && typeof sw.register === 'function' && location.protocol === 'https:') sw.register('./sw.js').catch(() => {}); });
 })();

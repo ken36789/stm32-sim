@@ -206,6 +206,38 @@
   <div class="lm-body" id="lmBody"></div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+/* 啟動保護：網站沒有順利啟動時（例如網站剛更新、瀏覽器還拿著舊的檔案，或這個瀏覽器不支援某些功能），
+   顯示原因和修復按鈕，而不是一直停在空白畫面。這段刻意不用任何外部檔案，CSS 或 JS 載入失敗時也能顯示。 */
+(function(){
+  var errs = [], box = null, t0 = Date.now();
+  addEventListener('error', function(e){ var t = e.target; if (t && /fonts\.g/.test(t.href || t.src || '')) return; errs.push(t && t !== window && (t.src || t.href) ? '無法載入：' + (t.src || t.href) : (e.message || '錯誤') + (e.filename ? '（' + e.filename.split('/').pop() + ':' + e.lineno + '）' : '')); }, true);
+  addEventListener('unhandledrejection', function(e){ errs.push('Promise：' + String(e.reason && e.reason.message || e.reason)); });
+  function btn(label, fn){ var b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'font:600 15px system-ui,sans-serif;padding:11px 14px;border-radius:10px;border:1px solid #c9d2d8;background:#fff;color:#14191d;margin:4px 6px 0 0'; b.onclick = fn; return b; }
+  function show(){
+    if (box || window.__mcuReady) return;
+    box = document.createElement('div'); box.setAttribute('role', 'alert');
+    box.style.cssText = 'position:fixed;inset:0;z-index:99;background:#eef2f4;color:#14191d;overflow:auto;padding:max(24px,env(safe-area-inset-top)) 20px 24px;font:15px/1.6 system-ui,-apple-system,"PingFang TC",sans-serif';
+    box.innerHTML = '<div style="max-width:560px;margin:0 auto"><h2 style="margin:0 0 8px;font-size:21px">畫面沒有順利載入</h2><p style="margin:0 0 10px">網站可能剛更新，瀏覽器還拿著舊的檔案。請先按「重新整理」；還是不行，再按「清除快取後重新整理」。</p><div id="bfBtns"></div><pre id="bfErr" style="white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid #c9d2d8;border-radius:10px;padding:10px;font:12px/1.5 ui-monospace,Menlo,monospace;margin:14px 0 6px"></pre><p style="margin:0;color:#5b6b75;font-size:13px">如果還是打不開，把這個畫面截圖傳給開發者。</p></div>';
+    document.body.appendChild(box);
+    var bs = box.querySelector('#bfBtns');
+    bs.appendChild(btn('重新整理', function(){ location.reload(); }));
+    bs.appendChild(btn('清除快取後重新整理', function(){
+      var jobs = [];
+      try { if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) jobs.push(navigator.serviceWorker.getRegistrations().then(function(rs){ return Promise.all(rs.map(function(r){ return r.unregister(); })); })); } catch (e) {}
+      try { if (window.caches) jobs.push(caches.keys().then(function(ks){ return Promise.all(ks.map(function(k){ return caches.delete(k); })); })); } catch (e) {}
+      Promise.all(jobs).then(function(){ location.replace(location.pathname + '?v=' + Date.now()); }, function(){ location.reload(); });
+    }));
+    bs.appendChild(btn('重設工作台（清除這台裝置的存檔）', function(){ try { ['stm32-sim-v2', 'mcu-lab-active', 'mcu-lab-backup'].forEach(function(k){ localStorage.removeItem(k); }); } catch (e) {} location.reload(); }));
+    box.querySelector('#bfErr').textContent = (errs.length ? errs.slice(0, 6).join('\n') : '（沒有錯誤訊息：可能還在載入，或被瀏覽器擋住）') + '\n\n' + navigator.userAgent;
+  }
+  var timer = setInterval(function(){
+    if (window.__mcuReady){ if (box){ box.remove(); box = null; } clearInterval(timer); return; }
+    var s = (Date.now() - t0) / 1000;
+    if ((errs.length && s > 4) || s > 15) show();
+  }, 1000);
+})();
+</script>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>
