@@ -13,4 +13,6 @@ export const hooks = {
   sensorDamaged: noop,  // (boolean) 感測器損壞狀態
   recheck: noop,        // 重新執行接線檢測
   benchChanged: noop,   // 開發板或模組變更（需要重建 3D 與面板）
+  analyzed: noop,       // ({ m, proto, opt, res }) 邏輯分析儀完成一次解碼（闖關判定用）
+  stepperOpened: noop,  // (模組) 打開步進馬達示波器
 };

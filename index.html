@@ -7,7 +7,12 @@
 <meta name="description" content="在瀏覽器裡用 3D 模擬 ST、TI、NXP 共 116 種 MCU 的接線、檢測接線錯誤、編譯燒錄 C 程式，並用邏輯分析儀觀察 I2C、UART、SPI、CAN 訊號。">
 <meta name="theme-color" content="#e7ecef" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1418" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MCU 實驗室">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
@@ -23,6 +28,7 @@
       </div>
     </div>
     <div class="status" aria-live="polite">
+      <button class="btn sm learn-btn" id="btnLearn" type="button"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 14V2.5M3 3h8.5l-1.8 2.8L11.5 8.6H3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>闖關學習</button>
       <button class="btn sm theme-btn" id="btnTheme" type="button">主題：跟隨系統</button>
       <span class="pill" id="pPower"><i></i><span>USB 供電</span></span>
       <span class="pill" id="pFlash"><i></i><span>Flash 空白</span></span>
@@ -33,12 +39,15 @@
   <section class="stage" id="stage" aria-label="3D 開發板：拖曳旋轉、雙指縮放，點兩個腳位接線">
     <div class="loading" id="loading">載入 3D 開發板…</div>
     <div class="hint" id="hint"></div>
+    <div class="mh" id="mh" hidden aria-live="polite" aria-label="目前的關卡"></div>
+    <div class="sharebox" id="shareBox" hidden><label for="shareUrl">分享網址（全選後複製）</label><input id="shareUrl" readonly><button class="btn sm" id="shareClose" type="button">關閉</button></div>
     <div class="tip" id="tip" hidden></div>
     <div class="wirepop" id="wirepop" hidden><span class="sw" id="wpSw"></span><span id="wpText"></span><button class="btn sm danger" id="wpDel" type="button">拔除</button></div>
     <div class="temp" id="tempRead" hidden></div>
     <div class="stage-tools">
       <button class="btn sm" id="btnSound" type="button" aria-pressed="false">聲音：關</button>
       <button class="btn sm" id="btnUsb" type="button">拔除 USB</button>
+      <button class="btn sm" id="btnShare" type="button">分享</button>
       <button class="btn sm" id="btnView" type="button">重設視角</button>
     </div>
   </section>
@@ -187,6 +196,14 @@
       <div class="la-pane" id="smPane"></div>
     </aside>
   </div>
+</div>
+<div class="la lm" id="lm" hidden role="dialog" aria-modal="true" aria-labelledby="lmTitle">
+  <header class="la-top">
+    <div class="la-ttl"><svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 14V2.5M3 3h8.5l-1.8 2.8L11.5 8.6H3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg><div><strong id="lmTitle">闖關學習</strong><small id="lmSub"></small></div></div>
+    <button class="btn sm" id="lmClose" type="button">關閉</button>
+  </header>
+  <div class="la-tabs lm-tabs" role="tablist"><button type="button" data-tab="mission" role="tab">闖關課程（6）</button><button type="button" data-tab="challenge" role="tab">故障挑戰（10）</button></div>
+  <div class="lm-body" id="lmBody"></div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="/src/main.js"></script>

@@ -1,0 +1,16 @@
+{
+  "name": "MCU 模擬實驗室",
+  "short_name": "MCU 實驗室",
+  "description": "用 3D 模擬 MCU 接線、檢測、編譯燒錄，闖關學嵌入式系統。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14191d",
+  "theme_color": "#14191d",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

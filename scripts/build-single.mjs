@@ -14,7 +14,7 @@ html = html.replace(/<script type="module"[^>]*src="\.?\/?(assets\/[^"]+\.js)"[^
   return `<script type="module">\n${js}\n</script>`;
 });
 
-html = html.replace(/<link rel="icon"[^>]*>\n?/, '');
+html = html.replace(/<link rel="(icon|manifest|apple-touch-icon)"[^>]*>\n?/g, '');
 
 if (/src="\.?\/?assets\//.test(html) || /href="\.?\/?assets\//.test(html)) throw new Error('仍有未內嵌的資源');
 mkdirSync('dist-single', { recursive: true });

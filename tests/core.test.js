@@ -439,3 +439,61 @@ test('用一般 GPIO 切換 CLK 也能一步一步推動馬達；MODE 腳接線�
   await until(() => { stepperTick(); return Math.abs(motorInfo(m).revs) > .05; }, 3000); stopProgram(true);
   assert.ok(Math.abs(motorInfo(m).revs) > .05, `GPIO 切換只轉了 ${motorInfo(m).revs}`);
 });
+
+/* ---------- 分享網址與闖關 ---------- */
+import { snapshot as projectSnap, loadBench, loadWires, encodeShare, decodeShare } from '../src/core/project.js';
+import { ALL, MISSIONS, CHALLENGES, prepare, makeCtx, evaluate } from '../src/core/missions.js';
+import { pinListeners } from '../src/core/sim.js';
+import { isRunning } from '../src/core/runtime.js';
+
+test('分享網址：作品壓縮進網址再還原，模組、設定、接線、程式都一樣', async () => {
+  setup('nucleo-f446re', [...DEFAULT_MODULES, { type:'tb67' }, { type:'motor' }, { type:'psu', variant:'psu-12' }]);
+  const d = bench.modules.find(m => m.type === 'tb67'); drvOf(d).vref = 1.2; drvOf(d).jdiv = 64;
+  const s1 = projectSnap({ code:'int main(void){ return 0; }' }), enc = await encodeShare(s1);
+  assert.match(enc, /^[zj][\w-]+$/);
+  const s2 = await decodeShare(enc);
+  assert.deepEqual(s2, s1);
+  loadBench(s2); loadWires(s2);
+  assert.deepEqual(projectSnap({ code:'int main(void){ return 0; }' }), s1);
+  assert.equal(drvOf(bench.modules.find(m => m.type === 'tb67')).jdiv, 64);
+  await assert.rejects(decodeShare('jeyJ4IjoxfQ'));                      // {"x":1}：不是作品
+  const ex = await encodeShare(projectSnap({ example:true }));
+  assert.ok(ex.length < enc.length, '範例程式不用放進網址');
+});
+
+test('16 關都能在六種 SDK 上準備好：解答的接線檢測通過、程式可以編譯；故障挑戰一開始真的有問題', () => {
+  for (const sdk of [...new Set(BOARDS.map(b => b.sdk))]){
+    const b = BOARDS.find(x => x.sdk === sdk && x.step && x.spi);
+    for (const x of ALL){
+      const p = prepare(x, b.id);
+      assert.ok(p.fix && p.fix.wires.length, `${x.id} 沒有解答`);
+      if (x.kind === 'challenge'){
+        const bugged = JSON.stringify(projectSnap({ code:p.code }));
+        assert.notEqual(bugged, JSON.stringify(p.fix), `${b.id} ${x.id} 沒有製造問題`);
+      } else assert.equal(wires.length, 0, `${x.id} 一開始不應該有線`);
+      for (const w of [...wires]) removeWire(w, true); loadWires(p.fix);
+      const c = compile(p.fix.code); assert.equal(c.ok, true, `${b.id} ${x.id}: ${JSON.stringify(c.diag)}`);
+      assert.deepEqual(problems(runChecks(p.fix.code)), [], `${b.id} ${x.id}`);
+    }
+  }
+});
+
+test('闖關判定：照解答完成會過關；故障挑戰修好前不會過關', async () => {
+  let serial = '', EDGE = null;
+  pinListeners.push((pin, v) => EDGE && EDGE(pin, v));
+  hooks.serial = s => { serial += s; }; hooks.run = st => { if (st === 'run') serial = ''; };
+  const play = async (x, code, st, ms) => {
+    const c = compile(code); SIM.flashed = { js:c.js, size:c.size.text }; startProgram();
+    EDGE = x.edge ? (pin, v) => x.edge(makeCtx(st, { running:isRunning(), serial, reflashed:true }), pin, v) : null;
+    let r; const t0 = Date.now();
+    while (Date.now() - t0 < ms){ stepperTick(); r = evaluate(x, makeCtx(st, { running:isRunning(), serial, reflashed:true })); if (r.done) break; await sleep(25); }
+    stopProgram(true); SIM.out = {}; SIM.mode = {}; EDGE = null; return r;
+  };
+  for (const x of [MISSIONS[0], CHALLENGES[3], CHALLENGES[9]].map(y => ALL.find(z => z.id === y.id))){
+    const p = prepare(x, 'nucleo-h743zi2'), st = { exp:p.exp, cnt:{}, v:{}, flag:{} };
+    if (x.kind === 'challenge') assert.equal((await play(x, p.code, st, 1500)).done, false, `${x.id} 一開始就過關了`);
+    for (const w of [...wires]) removeWire(w, true); loadWires(p.fix);
+    const r = await play(x, p.fix.code, { exp:p.exp, cnt:{}, v:{}, flag:{} }, 4500);
+    assert.equal(r.done, true, `${x.id}：${r.steps.map(s => (s.ok ? '✓' : '✗') + s.text).join(' ')}`);
+  }
+});

@@ -3,6 +3,7 @@ import { $, esc, toast } from './dom.js';
 import { MODULE_TYPES, variantOf } from '../core/parts.js';
 import { moduleById, moduleLabel, bench } from '../core/sim.js';
 import { tNow } from '../core/trace.js';
+import { hooks } from '../core/hooks.js';
 import { capture, analyze, RATES, BAUDS, CAN_RATES } from '../core/analyzer.js';
 import { explain, LESSONS } from '../core/lessons.js';
 import { levelAt, idxAfter } from '../core/protocols.js';
@@ -95,6 +96,7 @@ function startCapture(){
 function reanalyze(fit){
   if (!S.cap) return;
   S.res = analyze(S.cap, S.opt);
+  { const m = moduleById(S.id); if (m) hooks.analyzed({ m, proto:MODULE_TYPES[m.type].analyzer, opt:S.opt, res:S.res }); }
   S.rows = {};
   for (const a of S.res.anns) (S.rows[a.row] = S.rows[a.row] || []).push(a);
   for (const r of Object.values(S.rows)) r.sort((x, y) => x.t0 - y.t0);

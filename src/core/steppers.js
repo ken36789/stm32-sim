@@ -193,7 +193,7 @@ function alignMap(mo, inp){
 function advance(m, t1){
   const mo = motorOf(m), mp = motorParams(m);
   if (mo.lastT === null){ mo.lastT = t1; return; }
-  let t = mo.lastT; if (t1 - t > 200) t = t1 - 200;          // 分頁在背景太久：只補最近 0.2 秒
+  let t = mo.lastT; if (t1 - t > 1000) t = t1 - 1000;        // 分頁在背景太久：只補最近 1 秒（畫面很慢的裝置也不會掉步）
   const inp = driverInputs(m);
   if (inp.div !== mo.div){ mo.ucnt = Math.round(mo.ucnt * inp.div / mo.div); mo.div = inp.div; }   // 改 MODE：電氣角不變
   alignMap(mo, inp);
@@ -281,7 +281,7 @@ export function coilCurrents(ucnt, div, en){
 }
 export function motorInfo(m){
   const mo = motorOf(m), mp = motorParams(m), inp = driverInputs(m), now = performance.now();
-  const lost = inp.mapOk ? Math.round((inp.sigma * mo.ucnt / mo.div + mo.off - mo.theta) / 4) * 4 : 0;
+  const lost = (inp.mapOk ? Math.round((inp.sigma * mo.ucnt / mo.div + mo.off - mo.theta) / 4) * 4 : 0) || 0;   // || 0：不要出現 −0
   const pps = inp.en ? inp.f || (now - mo.bb.t < 200 ? mo.bb.f : 0) : 0;
   return { div:mo.div, pps, dir:inp.dir, en:inp.en, ok:inp.ok, src:inp.src, k:inp.k, kind:inp.kind, inp,
     rps:(mo.wf || 0) / mp.fullSteps, rpm:(mo.wf || 0) / mp.fullSteps * 60, cmdRpm:pps / mo.div / mp.fullSteps * 60 * inp.dir * inp.sigma,
