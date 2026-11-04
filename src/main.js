@@ -548,6 +548,10 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
   safely('learn', () => initLearn({ shared, applyProject, benchLoaded, syncWiring, quickFlash, setCode, toast, showTab, markPins, openInspector, track, store,
     running:() => flashDone() && runningNow(), flashSeq:() => flashSeq, snapshotNow:() => ({ ...snapshot({ code:ta.value }), example:isExampleCode() }) }));
   safely('analytics', initAnalytics);
-  // 離線快取：有些 App 內建瀏覽器（例如 LINE）沒有 service worker，沒有就略過
-  safely('sw', () => { const sw = navigator.serviceWorker; if (sw && typeof sw.register === 'function' && location.protocol === 'https:') sw.register('./sw.js').catch(() => {}); });
+  // 離線快取已停用（iPhone Safari 上會讓網站打不開）：清掉之前裝過的 service worker 和它的快取
+  safely('sw', () => {
+    const sw = navigator.serviceWorker;
+    if (sw && typeof sw.getRegistrations === 'function') sw.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
+    if (window.caches) caches.keys().then(ks => ks.filter(k => k.startsWith('mcu-lab')).forEach(k => caches.delete(k))).catch(() => {});
+  });
 })();
