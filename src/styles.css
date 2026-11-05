@@ -354,6 +354,23 @@ body.la-open .app{visibility:hidden}
 }
 .addgroup{display:flex;flex-direction:column;gap:6px}
 .addgroup small{color:var(--muted);font-size:11.5px}
+/* 這塊板子不能用的模組：灰色、虛線框，第二行寫原因 */
+.btn.off{background:var(--surface-2);border-style:dashed;color:var(--muted);cursor:not-allowed;flex-direction:column;align-items:flex-start;gap:3px;white-space:normal;text-align:left;filter:grayscale(1)}
+.btn.off em{font:600 11px/1.2 var(--f-body);font-style:normal;color:var(--muted);opacity:.85}
+.btn.off:hover{background:var(--surface-2)}
+.nosup{margin:0;padding:8px 10px;border:1px dashed var(--line);border-radius:8px;background:var(--surface-2);color:var(--muted);font-size:12.5px;line-height:1.55;display:flex;flex-direction:column;gap:6px}
+.nosup p{margin:0}
+.nosup b,.nosup strong{color:var(--fg);font-weight:600}
+.nosup.part{border-style:solid;border-color:var(--warn-bg);background:var(--warn-bg);color:var(--fg)}
+.nosup.big{border-color:var(--warn);background:var(--warn-bg);color:var(--fg);margin:2px 0 4px}
+.nosup.big strong{font-size:13.5px}
+.nosup.big .note{margin:0}
+.nosup .alts{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.nosup .alts > span{font-size:12px;color:var(--muted)}
+.plist li.off strong{color:var(--muted)}
+.plist li.off button{background:repeating-linear-gradient(-45deg,transparent 0 8px,var(--surface-2) 8px 16px)}
+.grade.g0{background:transparent;border:1px dashed var(--muted);color:var(--muted)}
+.plist small .lack{display:block;font-style:normal;color:var(--warn);font-weight:600;font-size:11.5px;margin-top:1px}
 /* TB67S128FTG：接線圖與接線表 */
 .tb-svg{width:100%;height:auto;display:block;background:var(--code-bg);border-radius:10px;border:1px solid var(--line)}
 .tb-box{fill:var(--surface);stroke:var(--line);stroke-width:1.2}

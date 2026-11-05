@@ -8,6 +8,7 @@ import { tcTemp, canLink, nodeOfCan, spiDevices, CAN } from '../core/buses.js';
 import { probeSource, probeOk } from '../core/analyzer.js';
 import { USTEP, LOADS, ustepName, dmodeBits, motorOf, motorInfo, drvOf, drvStatus, motorOfDriver, divSource, coilMap, FAULTS, VREF_GAIN } from '../core/steppers.js';
 import { pinTable, wiringSvg } from './tb67guide.js';
+import { moduleSupport, needOf, FEATURES } from '../core/support.js';
 
 const GRADE = ['', '入門', '進階', '高階'];
 const RH_DEV = ['sht3x', 'aht20', 'hdc1080'];
@@ -20,6 +21,25 @@ const links = ls => ls.length ? `<div class="dls">${ls.map(link).join('')}</div>
 const back = `<button class="btn sm ghost back" data-act="overview" type="button">← 全部元件</button>`;
 const gradeTag = g => `<span class="grade g${g}">${GRADE[g]}</span>`;
 const specTable = rows => `<dl class="specs">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
+
+/* ---- 這塊板子不能用的模組：灰色按鈕＋原因＋可以改用的板子 ---- */
+const altBtns = alt => alt.length ? `<span class="alts"><span>可以改用</span>${alt.map(x => `<button class="btn sm" data-act="pick" data-id="${x.id}" type="button">換成 ${esc(x.name)}</button>`).join('')}</span>` : '';
+function addBtn(t, full){
+  const s = moduleSupport(t), name = esc(MODULE_TYPES[t].name);
+  return s.ok ? `<button class="btn sm" data-act="add" data-type="${t}" type="button" ${full ? 'disabled' : ''}>＋ ${name}</button>`
+    : `<button class="btn sm off" data-act="add" data-type="${t}" type="button" aria-disabled="true"><span>${name}</span><em>${esc(s.lack)}</em></button>`;
+}
+/** 同一組裡因為同一個原因不能用的模組合併成一段說明 */
+function groupNotes(types){
+  const by = new Map();
+  for (const t of types){
+    const s = moduleSupport(t); if (s.ok && !s.note) continue;
+    const k = s.ok ? 'ok:' + t : s.feat; if (!by.has(k)) by.set(k, { s, names:[] }); by.get(k).names.push(MODULE_TYPES[t].name);
+  }
+  return [...by.values()].map(({ s, names }) => s.ok
+    ? `<p class="nosup part"><b>${esc(names.join('、'))}</b>可以用，但${esc(s.note)}</p>`
+    : `<div class="nosup"><p><b>${esc(names.join('、'))}</b>不能用：${esc(s.why)}${esc(s.tip)}</p>${altBtns(s.alt)}</div>`).join('');
+}
 
 function boardSpecs(b){
   return [['廠牌', VENDORS.find(v => v.id === b.vendor).name], ['MCU', b.mcu], ['核心', `${b.core} · ${b.mhz} MHz`], ['SDK', SDK_NAMES[b.sdk]], ['Flash／RAM', `${fmtKB(b.flash)}／${fmtKB(b.ram)}`], ['封裝', b.pkg], ['板型', FORMS[b.form].name],
@@ -47,9 +67,9 @@ function overview(){
   </section>
   <section class="insp-sec">
     <span class="eyebrow">外接模組 ${mods.length}／${MAX_MODULES}</span>
-    <ul class="plist">${mods.map(m => { const v = variantOf(m.type, m.variant); return `<li><button data-act="module" data-id="${m.id}" type="button"><span><strong>${esc(moduleLabel(m))}</strong><small>${esc(v.name)} · ${esc(v.part)}</small></span>${gradeTag(v.grade)}<span class="go">›</span></button></li>`; }).join('') || '<li class="empty">還沒有外接模組，從下面新增。</li>'}</ul>
+    <ul class="plist">${mods.map(m => { const v = variantOf(m.type, m.variant), s = moduleSupport(m.type); return `<li${s.ok ? '' : ' class="off"'}><button data-act="module" data-id="${m.id}" type="button"><span><strong>${esc(moduleLabel(m))}</strong><small>${s.ok ? `${esc(v.name)} · ${esc(v.part)}` : `${esc(MODULE_TYPES[m.type].name)} · ${esc(s.lack)}，這塊板子不能用`}</small></span>${s.ok ? gradeTag(v.grade) : '<span class="grade g0">不支援</span>'}<span class="go">›</span></button></li>`; }).join('') || '<li class="empty">還沒有外接模組，從下面新增。</li>'}</ul>
     <span class="eyebrow">新增模組</span>
-    ${MODULE_GROUPS.map(([g, types]) => `<div class="addgroup"><small>${esc(g)}</small><div class="addgrid">${types.map(t => `<button class="btn sm" data-act="add" data-type="${t}" type="button" ${mods.length >= MAX_MODULES ? 'disabled' : ''}>＋ ${esc(MODULE_TYPES[t].name)}</button>`).join('')}</div></div>`).join('')}
+    ${MODULE_GROUPS.map(([g, types]) => `<div class="addgroup"><small>${esc(g)}</small><div class="addgrid">${types.map(t => addBtn(t, mods.length >= MAX_MODULES)).join('')}</div>${groupNotes(types)}</div>`).join('')}
     ${mods.length >= MAX_MODULES ? `<p class="note">工作台最多放 ${MAX_MODULES} 個模組，先移除一個再新增。</p>` : ''}
   </section>`;
 }
@@ -59,13 +79,18 @@ function boardsView(){
   const shown = BOARDS.filter(b => (insp.vendor === 'all' || b.vendor === insp.vendor) && (!q || `${b.name} ${b.mcu} ${b.core} ${b.series} ${b.vendor}`.toLowerCase().includes(q)));
   const groups = VENDORS.flatMap(v => v.series.map(s => [v, s, shown.filter(b => b.vendor === v.id && b.series === s)])).filter(([, , l]) => l.length);
   const count = id => BOARDS.filter(b => b.vendor === id).length;
+  // 目前工作台上的模組需要的周邊：換到沒有這個周邊的板子時，那些模組會變灰色
+  const needs = [...new Set(bench.modules.map(m => needOf(m.type)).filter(Boolean))];
+  const lackOf = x => { const fs = needs.filter(f => !x[f]); if (!fs.length) return '';
+    const names = [...new Set(bench.modules.filter(m => fs.includes(needOf(m.type))).map(m => MODULE_TYPES[m.type].name))];
+    return `<em class="lack">${fs.map(f => FEATURES[f].lack).join('、')}：${esc(names.join('、'))}會變灰色</em>`; };
   return `${back}
   <section class="insp-sec">
     <h2>更換晶片／開發板（共 ${BOARDS.length} 種）</h2>
     <p class="note">切換後，接在新板子上不存在的腳位的線會自動拔除，Flash 是空白的。每家晶片使用自己原廠 SDK 的寫法：ST 用 STM32Cube HAL，TI 用 DriverLib／TivaWare／C2000Ware，NXP 用 MCUXpresso SDK。「載入範例程式」會產生對應的寫法。</p>
     <input class="search" id="boardQuery" type="search" placeholder="搜尋型號，例如 F401、MSP430、K64、RT1060" value="${esc(insp.q)}" aria-label="搜尋晶片或開發板">
     <div class="chips seriesf">${[['all', `全部 ${BOARDS.length}`], ...VENDORS.map(v => [v.id, `${v.id} ${count(v.id)}`])].map(([id, l]) => `<button class="chip ${insp.vendor === id ? 'hi' : ''}" data-act="vendor" data-id="${id}" type="button">${l}</button>`).join('')}</div>
-    ${groups.map(([v, s, l]) => `<div class="bgroup"><span class="eyebrow">${esc(v.id)} · ${esc(seriesLabel(v.id, s))}</span><ul class="plist">${l.map(b => `<li><button data-act="pick" data-id="${b.id}" type="button" class="${b.id === cur ? 'cur' : ''}"><span><strong>${esc(b.name)}</strong><small>${esc(b.mcu)} · ${esc(b.core)} ${b.mhz} MHz · ${fmtKB(b.flash)}／${fmtKB(b.ram)}</small></span>${b.id === cur ? '<span class="grade g3">使用中</span>' : b.kind === 'official' ? '<span class="grade g2">官方板</span>' : '<span class="go">›</span>'}</button></li>`).join('')}</ul></div>`).join('') || '<p class="empty">找不到符合的晶片。</p>'}
+    ${groups.map(([v, s, l]) => `<div class="bgroup"><span class="eyebrow">${esc(v.id)} · ${esc(seriesLabel(v.id, s))}</span><ul class="plist">${l.map(b => `<li><button data-act="pick" data-id="${b.id}" type="button" class="${b.id === cur ? 'cur' : ''}"><span><strong>${esc(b.name)}</strong><small>${esc(b.mcu)} · ${esc(b.core)} ${b.mhz} MHz · ${fmtKB(b.flash)}／${fmtKB(b.ram)}${lackOf(b)}</small></span>${b.id === cur ? '<span class="grade g3">使用中</span>' : b.kind === 'official' ? '<span class="grade g2">官方板</span>' : '<span class="go">›</span>'}</button></li>`).join('')}</ul></div>`).join('') || '<p class="empty">找不到符合的晶片。</p>'}
   </section>`;
 }
 
@@ -128,16 +153,18 @@ function controls(m, v){
 
 function moduleView(id){
   const m = moduleById(id); if (!m) return overview();
-  const T = MODULE_TYPES[m.type], v = variantOf(m.type, m.variant);
+  const T = MODULE_TYPES[m.type], v = variantOf(m.type, m.variant), s = moduleSupport(m.type);
   return `${back}
   <section class="insp-sec">
     <span class="eyebrow">${esc(moduleLabel(m))} · ${esc(T.name)}</span>
+    ${s.ok ? '' : `<div class="nosup big" role="note"><strong>${esc(bench.board.name)} 不能用這個模組（${esc(s.lack)}）</strong><p>${esc(s.why)}${esc(s.tip)}</p>${altBtns(s.alt)}<p class="note">模組變成灰色：「建議接線」不會接它，通電後也不會動作。換成有這個功能的開發板，它就會恢復。</p></div>`}
     <h2 class="ptitle">${esc(v.name)} ${gradeTag(v.grade)}</h2>
     <p class="mono note">${esc(v.part)}</p>
+    ${s.note ? `<p class="nosup part">${esc(s.note)}</p>` : ''}
     ${specTable([...v.specs, ['腳位', T.pins.map(p => p[0]).join('、')]])}
     ${links(v.links)}
-    <div class="live" id="inspLive"></div>
-    ${controls(m, v)}
+    ${s.ok ? `<div class="live" id="inspLive"></div>
+    ${controls(m, v)}` : ''}
   </section>
   ${m.type === 'tb67' ? `<section class="insp-sec"><span class="eyebrow">接線圖（依目前的接線）</span>${wiringSvg(m)}</section>
   <section class="insp-sec"><span class="eyebrow">每一支腳怎麼接</span>${pinTable(m)}</section>` : ''}

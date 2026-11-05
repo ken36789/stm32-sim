@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { BOARDS } from '../src/core/boards.js';
 import { MODULE_TYPES, TYPE_ORDER, DEFAULT_MODULES } from '../src/core/parts.js';
 import { hooks } from '../src/core/hooks.js';
-import { SIM, bench, setBoard, addModule, resetBench, addWire, refreshNet, readPin, moduleState, i2cDevices, setVariant } from '../src/core/sim.js';
+import { SIM, bench, setBoard, addModule, resetBench, addWire, refreshNet, readPin, moduleState, i2cDevices, setVariant, moduleLabel } from '../src/core/sim.js';
 import { runChecks } from '../src/core/checks.js';
 import { compile } from '../src/core/compiler.js';
 import { cfmt } from '../src/core/printf.js';
@@ -15,6 +15,7 @@ import { setTrace, traceI2C, traceUART, traceSPI, traceCAN, snapshot, tNow, TRAC
 import { decodeI2C, decodeUART, decodeSPI, decodeCAN, sampleSig, canFrameBits, crc15 } from '../src/core/protocols.js';
 import { capture, analyze } from '../src/core/analyzer.js';
 import { nodeOfCan } from '../src/core/buses.js';
+import { moduleSupport, unsupportedModules } from '../src/core/support.js';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const problems = res => res.filter(r => r.sev === 'err' || r.sev === 'warn').map(r => `${r.sev}: ${r.title}`);
@@ -228,8 +229,16 @@ test('有 SPI 的晶片都能接熱電偶與 SPI Flash；有 CAN 的晶片都能
     if (b.spi) spi++; if (b.can) can++;
   }
   assert.ok(spi >= 110 && can >= 50, `SPI ${spi}、CAN ${can}`);
-  setup('nucleo-f401re', [{ type:'can' }]);
-  assert.ok(problems(runChecks(exampleCode())).some(p => /不能做 CAN 實驗/.test(p)), '沒有 CAN 的晶片要報錯');
+  // 沒有 CAN 的晶片：模組是灰色的、建議接線不接它；使用者自己接了線，檢測只給警告（不擋燒錄），並列出可以改用的板子
+  setup('nucleo-f401re', [{ type:'led' }, { type:'can' }]);
+  const cm = bench.modules.find(m => m.type === 'can'), sup = moduleSupport('can');
+  assert.equal(sup.ok, false); assert.match(sup.why, /STM32F401 沒有 CAN/); assert.ok(sup.alt.length && sup.alt.every(x => x.can), '要推薦有 CAN 的板子');
+  assert.ok(!suggestWiring().flat().some(id => id.startsWith(cm.id + '.')), '建議接線不接灰色模組');
+  assert.ok(addWire('R.+9', `${cm.id}.VCC`, null, true)); refreshNet();
+  const r = runChecks(exampleCode()).filter(x => x.title.includes(moduleLabel(cm)));
+  assert.ok(r.some(x => x.sev === 'warn' && /不能用/.test(x.title) && /NUCLEO-F446RE/.test(x.detail)), JSON.stringify(r));
+  assert.ok(!r.some(x => x.sev === 'err'), '灰色模組不應該報錯');
+  assert.deepEqual(unsupportedModules().map(m => m.id), [cm.id]);
 });
 
 test('每一種 SDK 都能用 SPI 讀熱電偶、讀寫 Flash，並收發 CAN', async () => {
@@ -294,7 +303,13 @@ test('有計時器 PWM 的晶片：兩顆步進馬達的建議接線＋範例程
   let n = 0;
   for (const b of BOARDS){
     setup(b.id, b.step ? STEP2 : [{ type:'stepper' }]);
-    if (!b.step){ assert.ok(runChecks(exampleCode()).some(r => r.sev === 'err' && /STEP/.test(r.title)), `${b.id} 應該提示不支援`); assert.equal(compile(exampleCode()).ok, true, b.id); continue; }
+    if (!b.step){
+      const s = moduleSupport('stepper'), st = bench.modules[0];
+      assert.equal(s.ok, false, b.id); assert.match(s.lack, /STEP/); assert.ok(s.alt.every(x => x.step), b.id);
+      assert.ok(!wires.some(w => w.a.startsWith(st.id + '.') || w.b.startsWith(st.id + '.')), `${b.id} 建議接線不接灰色模組`);
+      assert.equal(moduleSupport('tb67').ok, true, `${b.id}：TB67 驅動板用 GPIO 送 CLK 還是可以用`);
+      assert.equal(compile(exampleCode()).ok, true, b.id); continue;
+    }
     n++;
     const c = compile(exampleCode());
     assert.equal(c.ok, true, `${b.id}: ${JSON.stringify(c.diag)}`);

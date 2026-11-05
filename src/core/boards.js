@@ -95,7 +95,7 @@ function buildBoard(r){
   const NOCAN = ['STM32F401', 'STM32F411', 'STM32F410', 'STM32F030', 'STM32G071', 'STM32L152', 'STM32L073', 'STM32L053'];
   const fd = ['H7', 'H5', 'G4', 'U5'].includes(series), single = ['F0', 'F1', 'F3'].includes(series);
   const canPins = form === 'n64' ? { rx:'PA11', tx:'PA12' } : form === 'n32' ? { rx:'D10', tx:'D2' } : form === 'pill' ? { rx:'PB8', tx:'PB9' } : { rx:'PD0', tx:'PD1' };
-  const noCan = NOCAN.some(x => mcu.startsWith(x)) ? `${mcu.slice(0, 9)} 沒有 CAN 控制器。要做 CAN 實驗，請換成 F446、F103、G474、H743 等有 CAN 的晶片。` : null;
+  const noCan = NOCAN.some(x => mcu.startsWith(x)) ? `${mcu.slice(0, 9)} 沒有 CAN 控制器。` : null;
   const can = noCan ? null : { bus: fd ? 'FDCAN1' : single ? 'CAN' : 'CAN1', inst: fd ? 'FDCAN1' : 'CAN1', handle: fd ? 'hfdcan1' : single ? 'hcan' : 'hcan1', drv: fd ? 'fdcan' : 'bxcan', ...canPins };
   // 步進馬達的 STEP：兩組獨立的計時器 PWM 輸出（頻率要能分開調）
   const STEP = { n64:[['D9', 'TIM3', 2], ['D6', 'TIM2', 3]], n144:[['D9', 'TIM4', 4], ['D6', 'TIM1', 1]], n32:[['D9', 'TIM1', 1], ['A1', 'TIM2', 2]], pill:[['PA8', 'TIM1', 1], ['PA1', 'TIM2', 2]], disco:[['PE9', 'TIM1', 1], ['PB10', 'TIM2', 3]] };

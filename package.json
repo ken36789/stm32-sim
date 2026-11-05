@@ -1,6 +1,6 @@
 {
   "name": "stm32-sim",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "瀏覽器裡的 MCU 模擬實驗室：116 種晶片的 3D 接線、檢測、燒錄，與 I2C／UART／SPI／CAN 邏輯分析儀",
   "type": "module",

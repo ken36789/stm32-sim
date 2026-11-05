@@ -14,6 +14,7 @@ import { isStepper, isDriver, stepperTick, motorInfo, motorOf, setDiv, setLoad, 
 import { runChecks } from './core/checks.js';
 import { startProgram, stopProgram, isRunning } from './core/runtime.js';
 import { suggestWiring, exampleCode } from './core/codegen.js';
+import { moduleSupport, unsupportedModules, supportText } from './core/support.js';
 import { R, G, initScene, buildBench, fitView, setLed, pressCap, buildWireMesh, disposeWireMesh, sceneBg, setUsbVisible } from './scene/scene.js';
 import { updateModule } from './scene/modules3d.js';
 import { WIRE_COLORS, COLOR_NAMES, hex6 } from './scene/util.js';
@@ -140,13 +141,16 @@ function changeBoard(id){
   outputsReset(); setRun(powered() ? 'idle' : 'off'); updatePills(); updateButtons();
   showInspector('overview');
   if (G.ready) fitView();
-  toast(`已切換到 ${bench.board.name}${removed ? `，拔除了 ${removed} 條接到不存在腳位的線` : ''}。Flash 是空白的，請重新燒錄。`);
+  const off = unsupportedModules();
+  toast(`已切換到 ${bench.board.name}${removed ? `，拔除了 ${removed} 條接到不存在腳位的線` : ''}。Flash 是空白的，請重新燒錄。${off.length ? `${offNames(off)}在這塊板子上不能用（${[...new Set(off.map(m => moduleSupport(m.type).lack))].join('、')}），已變成灰色。` : ''}`, off.length ? 'err' : '');
 }
+const offNames = list => [...new Set(list.map(m => MODULE_TYPES[m.type].name))].join("、");
 const ACTIONS = {
   changeBoard,
   setVariant:(id, vid) => { const m = moduleById(id); if (!m || m.variant === vid) return; setVariant(id, vid); showInspector('module', id); toast(`${moduleLabel(m)} 已換成 ${variantOf(m.type, vid).name}。`); },
   removeModule:id => { const m = moduleById(id); if (!m) return; const name = moduleLabel(m); removeModule(id); showInspector('overview'); toast(`已移除 ${name}。`); },
   addModule:type => {
+    if (!moduleSupport(type).ok){ toast(`${MODULE_TYPES[type].name}不能用：${supportText(type)}`, 'err'); return; }
     const m = addModule(type);
     if (!m){ toast(bench.modules.length >= MAX_MODULES ? `工作台最多放 ${MAX_MODULES} 個模組。` : '工作台沒有前後相連的兩格空位：驅動板比較大，要佔兩格。先移除一個模組。'); return; }
     showInspector('module', m.id); markModule(m.id);
@@ -198,7 +202,8 @@ $('#btnAdd').addEventListener('click', () => { const c = $('#selColor').value, a
 $('#btnSuggest').addEventListener('click', () => {
   learnAssist('suggest');
   clearWires(true); const pairs = suggestWiring(); pairs.forEach(([a, b]) => addWire(a, b, null, true)); afterWiring();
-  toast(`已依 ${bench.board.name} 與目前的模組接好 ${pairs.length} 條線。`);
+  const off = unsupportedModules();
+  toast(`已依 ${bench.board.name} 與目前的模組接好 ${pairs.length} 條線。${off.length ? `灰色的${offNames(off)}沒有接：${[...new Set(off.map(m => moduleSupport(m.type).why))].join('')}` : ''}`);
 });
 $('#btnClear').addEventListener('click', () => { if (!wires.length) return; clearWires(); toast('已拔除所有杜邦線。'); });
 function renderWireList(){
@@ -248,7 +253,7 @@ function onPick(h){
   if (!h){ if (UI.sel || UI.selWire){ UI.sel = null; selectWire(null); refreshRings(); renderHint(); } return; }
   if (h.type === 'usb'){ setUsb(!SIM.usb); return; }
   if (h.type === 'part'){ openInspector('part', h.key); return; }
-  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id); if (m && isAnalyzer(m)) openAnalyzer(h.id); if (m && isStepper(m)) openStepper(h.id); return; }   // 驅動板、電源：在「元件」分頁看接線表與設定
+  if (h.type === 'module'){ openInspector('module', h.id); markModule(h.id); const m = moduleById(h.id), ok = m && moduleSupport(m.type).ok; if (ok && isAnalyzer(m)) openAnalyzer(h.id); if (ok && isStepper(m)) openStepper(h.id); return; }   // 驅動板、電源：在「元件」分頁看接線表與設定
   if (h.type === 'touch'){ const m = moduleById(h.id); if (m?.type === 'pir') triggerMotion(h.id); else if (m) warmSensor(h.id); return; }
   if (h.type === 'wire'){ UI.sel = null; refreshRings(); renderHint(); selectWire(h.w); return; }
   if (h.type !== 'pin') return;
@@ -267,7 +272,7 @@ function tipFor(h){
   if (h.type === 'wire') return `<b>${esc(PINS[h.w.a].label)} → ${esc(PINS[h.w.b].label)}</b>\n點一下可拔除`;
   if (h.type === 'usb') return `<b>USB（${esc(b.prog)}）</b>\n點一下${SIM.usb ? '拔除' : '接上'}`;
   if (h.type === 'part'){ const p = boardParts(b).find(x => x.key === h.key); return `<b>${esc(p?.part || '')}</b>\n${esc(p?.name || '')}\n點一下查看資料與 datasheet`; }
-  if (h.type === 'module'){ const m = moduleById(h.id); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : isStepper(m) ? `${stepperTip(m)}\n點一下打開步進馬達示波器` : isDriver(m) ? `${driverTip(m)}\n點一下看每一支腳的接法` : m.type === 'psu' ? `${variantOf(m.type, m.variant).v} V · 開關${m.st.on === false ? '關' : '開'}\n點一下查看與開關電源` : '點一下查看資料、更換型號'}` : ''; }
+  if (h.type === 'module'){ const m = moduleById(h.id), sup = m && moduleSupport(m.type); return m ? `<b>${esc(moduleLabel(m))}</b>\n${esc(variantOf(m.type, m.variant).part)}\n${!sup.ok ? `${esc(bench.board.mcu)} 不支援（${esc(sup.lack)}）\n點一下看原因與可以改用的板子` : isAnalyzer(m) ? '點一下打開邏輯分析儀（波形與教學）' : isStepper(m) ? `${stepperTip(m)}\n點一下打開步進馬達示波器` : isDriver(m) ? `${driverTip(m)}\n點一下看每一支腳的接法` : m.type === 'psu' ? `${variantOf(m.type, m.variant).v} V · 開關${m.st.on === false ? '關' : '開'}\n點一下查看與開關電源` : '點一下查看資料、更換型號'}` : ''; }
   if (h.type === 'press'){ if (h.which === 'B1') return `<b>${esc(b.btn.name)}</b>（${esc(b.btn.pin)}）\n按住＝按下`; if (h.which === 'RESET') return '<b>RESET</b>\n按下後放開會重新執行程式'; const m = moduleById(h.which); return m ? `<b>${esc(moduleLabel(m))}</b>\n按住＝OUT 高電位` : ''; }
   if (h.type === 'touch'){ const m = moduleById(h.id); return !m ? '' : m.type === 'pir' ? `<b>${esc(moduleLabel(m))}</b>\n點一下模擬有人經過` : `<b>${esc(moduleLabel(m))}</b>\n約 ${sensorTemp(m).toFixed(2)} °C\n點一下模擬手指加溫`; }
   return '';

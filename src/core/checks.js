@@ -6,6 +6,7 @@ import { SPI_PINS } from './buses.js';
 import { probeSource, expectedSource, probeOk } from './analyzer.js';
 import { stripCode } from './compiler.js';
 import { hooks } from './hooks.js';
+import { moduleSupport, supportText } from './support.js';
 
 /** 找出程式實際輸出、讀取的 GPIO（支援 STM32 HAL、MSPM0、MSP430、TivaWare、C2000、MCUXpresso 的寫法） */
 export function analyzeCode(src){
@@ -192,6 +193,7 @@ export function runChecks(src){
   for (const m of bench.modules){
     const v = variantOf(m.type, m.variant), T = MODULE_TYPES[m.type], name = `${moduleLabel(m)}（${v.name}）`, P = n => `${m.id}.${n}`;
     if (!T.pins.some(([n]) => hasWire(P(n)))){ add('info', `${name} 沒有使用`, '沒有接線，略過檢查。'); continue; }
+    if (!moduleSupport(m.type, b).ok){ add('warn', `${name} 在 ${b.name} 上不能用`, `${supportText(m.type, b)} 這個模組是灰色的，不會動作；把它的線拔掉或移除模組，這個警告就會消失。`, T.pins.map(([n]) => P(n)).filter(hasWire)); continue; }
     const gnd = (n = 'GND') => {
       if (netInfo(P(n)).gnd) add('ok', `${moduleLabel(m)} ${n} → GND`, '接地正確。', netPins(P(n)));
       else add('err', `${moduleLabel(m)} 的 ${n} 沒有接地`, '沒有接地就沒有電流回路。接到排針的 GND 或電源軌 −。', pinsOr(P(n)));
@@ -228,7 +230,6 @@ export function runChecks(src){
       case 'relay': vcc(v.vmin, 5.5, v.vmin > 3.6 ? '5 V 繼電器的線圈接 3.3 V 吸不動。改接 5V，或換成 3 V 繼電器模組。' : null); gpio('IN', 'out'); gnd(); break;
       case 'pot': vcc(1.8, 3.6, '電位器接 5 V 時輸出最高 5 V，超過 ADC 的 3.3 V 上限，會損壞輸入腳。改接 3V3。'); gpio('OUT', 'adc'); gnd(); break;
       case 'tc': case 'flash': {
-        if (!b.spi){ add('err', `${b.name} 沒有可用的 SPI`, b.noSpi || '這塊板子沒有可以用的 SPI。換一塊開發板再試。', pinsOr(P('CS'))); break; }
         vcc(v.vmin, v.vmax, `${v.part} 的工作電壓是 ${v.vmin}–${v.vmax} V。`); gnd();
         const N = SPI_PINS[m.type], want = { sck:headerPin(b.spi.sck), miso:headerPin(b.spi.miso), mosi:headerPin(b.spi.mosi) };
         const roles = [['sck', N.sck, 'SCK'], ['miso', N.miso, 'MISO'], ...(N.mosi ? [['mosi', N.mosi, 'MOSI']] : [])];
@@ -246,7 +247,6 @@ export function runChecks(src){
         break;
       }
       case 'can': {
-        if (!b.can){ add('err', `${b.mcu} 不能做 CAN 實驗`, b.noCan || '這顆晶片沒有 CAN 控制器。', pinsOr(P('TXD'))); break; }
         vcc(v.vmin, v.vmax, v.vmin > 3.6 ? 'TJA1050 需要 5 V 供電，接 3V3 不會動作。改接 5V，或換成 3.3 V 的 SN65HVD230。' : `${v.part} 是 3.3 V 的收發器，接 5 V 會損壞。改接 3V3。`); gnd();
         const tx = headerPin(b.can.tx), rx = headerPin(b.can.rx), ti = netInfo(P('TXD')), ri = netInfo(P('RXD'));
         if (ti.gpio.includes(rx.mcu) && ri.gpio.includes(tx.mcu)) add('err', `${moduleLabel(m)} 的 TXD 與 RXD 接反`, `收發器的 TXD 要接 MCU 的 CAN_TX＝${pinName(tx.mcu)}（MCU 送出 → 收發器轉成差動訊號），RXD 接 CAN_RX＝${pinName(rx.mcu)}。`, [...netPins(P('TXD')), ...netPins(P('RXD'))]);
@@ -262,8 +262,7 @@ export function runChecks(src){
       }
       case 'stepper': {
         vcc(2, 5.5, 'IOREF 是邏輯電位參考，要接 3V3（和 MCU 相同的電位）。'); gnd();
-        if (!b.step){ add('err', `${b.name} 沒有設定 STEP 輸出`, b.noStep || '這塊板子沒有可以用的計時器 PWM 輸出。', pinsOr(P('CLK'))); }
-        else {
+        {
           const ci = netInfo(P('CLK')), stepAt = ci.gpio.map(g => b.step.findIndex(x => headerPin(x.pin)?.mcu === g)).find(k => k >= 0);
           const list = b.step.map(x => `${pinName(headerPin(x.pin).mcu)}（${x.tim}）`).join(' 或 ');
           if (!hasWire(P('CLK'))) add('err', `${moduleLabel(m)} 的 CLK 沒有接`, `CLK（STEP）要接到計時器的 PWM 輸出：${list}。`, [P('CLK')]);

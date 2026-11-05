@@ -4,6 +4,7 @@ import { bench, netInfo, moduleLabel, isAnalyzer } from './sim.js';
 import { sdkFor } from './sdk.js';
 import { SPI_TYPES, SPI_PINS } from './buses.js';
 import { drvStatus, motorOfDriver } from './steppers.js';
+import { moduleSupport } from './support.js';
 
 const SIGNAL = { led:['SIG'], rgb:['R', 'G', 'B'], button:['OUT'], pir:['OUT'], buzzer:['SIG'], relay:['IN'], pot:['OUT'] };
 
@@ -31,7 +32,9 @@ export function suggestWiring(){
     if (pins.includes('VCC')) pairs.push([v.vmin > 3.6 ? (take('5V') || rail('+')) : rail('+'), P('VCC')]);
     if (pins.includes('GND')) pairs.push([rail('-'), P('GND')]);
   };
-  const devices = bench.modules.filter(m => !isAnalyzer(m)), analyzers = bench.modules.filter(isAnalyzer);
+  // 這塊板子不能用的模組（灰色）完全不接，連電源也不接
+  const usable = bench.modules.filter(m => moduleSupport(m.type, b).ok);
+  const devices = usable.filter(m => !isAnalyzer(m)), analyzers = usable.filter(isAnalyzer);
   let firstSpi = null, nStep = 0;
   // 驅動板的訊號腳：數位腳不夠時也可以用類比腳（大多數 MCU 的類比腳也能當 GPIO）
   const gpioPin = () => nextPin(digital) || nextPin(analog);

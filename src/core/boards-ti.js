@@ -38,7 +38,7 @@ const fr2355 = (mcu, mhz, flash, ram, tool) => base({ mcu, series:'MSP430', core
   header:hdr(FR2355), adc:['P1.1','P1.4','P1.5','P1.6','P1.7','P5.0','P5.1','P5.2','P5.3'], i2c:{ bus:'eUSCI_B0', inst:'EUSCI_B0', drv:'EUSCI_B', scl:'P1.3', sda:'P1.2' },
   leds:[['LED1','P1.0','red'], ['LED2','P6.6','green']], btn:['S1','P4.1',true], vcp:['eUSCI_A1','P4.3','P4.2'], adcDrv:'ADC', adcBits:12,
   spi:{ bus:'eUSCI_B1', inst:'EUSCI_B1', drv:'EUSCI_B', sck:'P4.5', mosi:'P4.6', miso:'P4.7', cs:'P4.4' }, noCan:NOCAN430, step:[TB('P2.0', 'B', 1), TB('P5.0', 'B', 2)] }, 'msp430', tool);
-const NOCAN430 = 'MSP430 沒有 CAN 控制器。要做 CAN 實驗，請換成 MSPM0G3507、TM4C123 或 C2000。';
+const NOCAN430 = 'MSP430 系列沒有 CAN 控制器。';
 /** MSP430 計時器輸出：TB1.1 這種寫法＝Timer_B1 的比較暫存器 1 */
 const TB = (pin, ab, n, cr = 1) => ({ pin, tim:`T${ab}${n}.${cr}`, inst:`TIMER_${ab}${n}`, drv:`Timer_${ab}`, ch:cr });
 const msp = o => base({ series:'MSP430', noCan:NOCAN430, core:'MSP430 16 位元', prog:'eZ-FET', dbg:{ ...XDS110, name:'eZ-FET', part:'MSP430F5528', desc:'板上的 eZ-FET 除錯器，負責 Spy-Bi-Wire 燒錄與 UART 虛擬序列埠。' }, pinStyle:'msp430', ...o, header:hdr(o.gpio) }, 'msp430', o.tool);

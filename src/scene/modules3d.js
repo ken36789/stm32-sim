@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { MODULE_TYPES, variantOf } from '../core/parts.js';
 import { moduleLabel } from '../core/sim.js';
+import { moduleSupport } from '../core/support.js';
 import { G, M, box, cyl, topPlane, ctex, hitBox, hitTarget, glowSprite, addPin, MOD_PIN_TOP } from './scene.js';
 
 const hex = n => '#' + n.toString(16).padStart(6, '0');
@@ -44,6 +45,33 @@ function drawScreen(proto){
     const P = { i2c:[[1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,1], [1,0,0,1,1,1,0,0,1,1,0,0,0,1,1,0,1]], uart:[[1,1,0,1,0,0,1,0,1,1,0,1,1,0,0,1,1], [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]], spi:[[0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0], [0,1,1,0,0,1,0,0,1,1,1,0,1,0,0,1,0]], can:[[1,1,0,0,1,0,1,1,1,0,0,0,0,1,0,1,1], [0,0,1,1,0,1,0,0,0,1,1,1,1,0,1,0,0]] }[proto];
     wave(96, P[0], proto === 'can' ? '#ff9f43' : '#5fe08a'); wave(170, P[1], proto === 'can' ? '#5aa8ff' : '#7fc2f2');
   });
+}
+
+/** 這塊板子不能用的模組：材質和貼圖都改成灰階、壓低對比 */
+function greyOut(grp){
+  const seen = new Set();
+  grp.traverse(o => {
+    const mat = o.material; if (!mat || seen.has(mat)) return; seen.add(mat);
+    if (mat.color){ const c = mat.color, l = .25 + (.3 * c.r + .59 * c.g + .11 * c.b) * .45; c.setRGB(l, l, l); }
+    if (mat.emissive) mat.emissive.setHex(0);
+    const img = mat.map?.image;
+    if (img?.getContext && !seen.has(img)){
+      seen.add(img);
+      const g = img.getContext('2d'), d = g.getImageData(0, 0, img.width, img.height), a = d.data;
+      for (let i = 0; i < a.length; i += 4){ const y = (a[i] * .3 + a[i + 1] * .59 + a[i + 2] * .11) * .6 + 50; a[i] = a[i + 1] = a[i + 2] = y; }
+      g.putImageData(d, 0, 0); mat.map.needsUpdate = true;
+    }
+  });
+}
+/** 灰色模組上方的標籤（永遠面向鏡頭、不會被其他東西擋住） */
+function offTag(text){
+  const W = 420, H = 96, t = ctex(W, H, g => {
+    g.fillStyle = 'rgba(22,26,30,.88)'; g.beginPath(); g.roundRect ? g.roundRect(4, 4, W - 8, H - 8, 20) : g.rect(4, 4, W - 8, H - 8); g.fill();
+    g.strokeStyle = 'rgba(255,209,102,.7)'; g.lineWidth = 3; g.stroke();
+    g.fillStyle = '#ffd166'; g.font = '700 38px "Noto Sans TC", "PingFang TC", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(`不支援 · ${text}`, W / 2, H / 2 + 2);
+  });
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map:t, transparent:true, depthTest:false, depthWrite:false }));
+  sp.scale.set(30, 6.9, 1); sp.renderOrder = 20; return sp;
 }
 
 export function buildModule(m, [sx, sz], parent){
@@ -227,6 +255,8 @@ export function buildModule(m, [sx, sz], parent){
       break;
     }
   }
+  const sup = moduleSupport(m.type);
+  if (!sup.ok){ greyOut(grp); V.off = true; const tag = offTag(sup.lack); tag.position.set(sx, 7, sz); parent.add(tag); }
   G.mods[m.id] = V;
 }
 
@@ -251,6 +281,7 @@ const lit = (V, on, color) => { if (V.mat){ V.mat.emissive.setHex(on ? color : 0
 /** 依模擬結果更新模組外觀；t 為動畫時間（毫秒） */
 export function updateModule(m, s, t){
   const V = G.mods[m.id]; if (!V) return;
+  if (V.off){ for (const k of ['glow', 'hold', 'en', 'fault', 'power', 'heat']) if (V[k]) V[k].visible = false; return; }
   switch (m.type){
     case 'led': lit(V, s.on, V.color); break;
     case 'rgb': { const c = (s.r ? 0xff2020 : 0) | (s.g ? 0x20ff40 : 0) | (s.b ? 0x3060ff : 0); lit(V, !!c, c); break; }
