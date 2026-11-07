@@ -494,7 +494,7 @@ body.la-open .app{visibility:hidden}
 .gd-scroll{gap:10px}
 .gd-bar{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:6px 0;background:var(--bg)}
 .gd-bar select{flex:1 1 220px;min-width:0;max-width:420px;padding:7px 28px 7px 10px;font-size:13px}
-.gd-bar .btn{text-decoration:none}
+.gd-bar .btn{text-decoration:none;color:var(--fg)}
 .gd-now{margin:0;padding:10px 12px;border-radius:10px;background:var(--info-bg);color:var(--fg);font-size:13px;line-height:1.6;max-width:72ch}
 .md{max-width:76ch;font-size:14.5px;line-height:1.75;color:var(--fg);overflow-wrap:anywhere}
 .md > :first-child{margin-top:0}
