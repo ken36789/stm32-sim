@@ -27,6 +27,7 @@ import { build, flash } from './ui/build.js';
 import { initInspector, renderInspector, showInspector, updateLive, insp } from './ui/inspector.js';
 import { snapshot, loadBench, loadWires, encodeShare, decodeShare } from './core/project.js';
 import { initLearn, learnSerial, learnRun, learnAnalyzed, learnAssist } from './ui/learn.js';
+import { initGuide } from './ui/guide.js';
 import { initAnalytics, track } from './ui/analytics.js';
 import { isRunning as runningNow } from './core/runtime.js';
 
@@ -552,6 +553,7 @@ new MutationObserver(themeChanged).observe(document.documentElement, { attribute
   const safely = (name, f) => { try { f(); } catch (e){ console.error(name, e); } };
   safely('learn', () => initLearn({ shared, applyProject, benchLoaded, syncWiring, quickFlash, setCode, toast, showTab, markPins, openInspector, track, store,
     running:() => flashDone() && runningNow(), flashSeq:() => flashSeq, snapshotNow:() => ({ ...snapshot({ code:ta.value }), example:isExampleCode() }) }));
+  safely('guide', () => initGuide({ track }));
   safely('analytics', initAnalytics);
   // 離線快取已停用（iPhone Safari 上會讓網站打不開）：清掉之前裝過的 service worker 和它的快取
   safely('sw', () => {

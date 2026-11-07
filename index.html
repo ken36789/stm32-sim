@@ -118,6 +118,7 @@
         <span class="file">main.c</span>
         <div class="btns">
           <button class="btn sm" id="btnExample" type="button">載入範例程式</button>
+          <button class="btn sm" id="btnGuide" type="button">程式解說</button>
           <button class="btn sm" id="btnBuild" type="button">編譯</button>
           <button class="btn sm primary" id="btnFlash" type="button">燒錄</button>
           <button class="btn sm" id="btnReset" type="button">重設</button>
@@ -204,6 +205,18 @@
   </header>
   <div class="la-tabs lm-tabs" role="tablist"><button type="button" data-tab="mission" role="tab">闖關課程（6）</button><button type="button" data-tab="challenge" role="tab">故障挑戰（10）</button></div>
   <div class="lm-body" id="lmBody"></div>
+</div>
+<div class="la lm gd" id="gd" hidden role="dialog" aria-modal="true" aria-labelledby="gdTitle">
+  <header class="la-top">
+    <div class="la-ttl"><svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.2c2-.9 3.9-.9 5.5.4v9.6c-1.6-1.3-3.5-1.3-5.5-.4zM13.5 3.2c-2-.9-3.9-.9-5.5.4v9.6c1.6-1.3 3.5-1.3 5.5-.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><div><strong id="gdTitle">程式解說</strong><small id="gdSub"></small></div></div>
+    <button class="btn sm" id="gdClose" type="button">關閉</button>
+  </header>
+  <div class="la-tabs lm-tabs" role="tablist"><button type="button" data-doc="code" role="tab">範例程式解說</button><button type="button" data-doc="dev" role="tab">原始碼導讀（開發者）</button></div>
+  <div class="lm-body gd-scroll" id="gdScroll">
+    <div class="gd-bar"><select id="gdToc" aria-label="跳到章節"></select><a class="btn sm" id="gdGit" target="_blank" rel="noopener">在 GitHub 看原始檔</a></div>
+    <p class="gd-now" id="gdNow"></p>
+    <article class="md" id="gdBody"></article>
+  </div>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script>
